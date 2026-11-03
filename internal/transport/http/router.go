@@ -7,25 +7,33 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
 
-// NewRouter builds the HTTP handler for the whole service.
-func NewRouter(logger *slog.Logger) http.Handler {
-	r := chi.NewRouter()
-	r.Use(RequestID)
-	r.Use(Recoverer(logger))
+// Deps is everything the router needs. main builds it; nothing here
+// constructs a dependency of its own.
+type Deps struct {
+	Logger *slog.Logger
 
-	r.Get("/healthz", healthz)
+	// Readiness lists the dependencies /readyz probes.
+	Readiness []ReadinessCheck
 
-	return r
+	// ReadinessTimeout bounds the whole /readyz probe.
+	ReadinessTimeout time.Duration
 }
 
-// healthz is the liveness probe. It reports that the process is up and
-// serving; it deliberately checks no dependencies, which is /readyz's job.
-func healthz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+// NewRouter builds the HTTP handler for the whole service.
+func NewRouter(d Deps) http.Handler {
+	r := chi.NewRouter()
+	r.Use(RequestID)
+	r.Use(Recoverer(d.Logger))
+
+	r.Get("/healthz", healthz)
+	r.Get("/readyz", readyz(d.Logger, d.Readiness, d.ReadinessTimeout))
+
+	return r
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

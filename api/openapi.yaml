@@ -1,0 +1,100 @@
+openapi: 3.1.0
+info:
+  title: RateGuard
+  version: 0.1.0
+  summary: Distributed API rate limiting as a service.
+  description: |
+    RateGuard decides whether a request to your application should be allowed,
+    against a token bucket shared by every RateGuard instance through Redis.
+
+    Every response carries an `X-Request-ID` header. An inbound `X-Request-ID`
+    of at most 64 characters from `[A-Za-z0-9._-]` is reused; anything else is
+    replaced with a generated ID.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local Docker Compose stack
+tags:
+  - name: health
+    description: Liveness and readiness probes.
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      summary: Liveness probe
+      description: Reports that the process is up. It checks no dependencies.
+      security: [] # Probes are unauthenticated by design.
+      responses:
+        "200":
+          description: The process is serving.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /readyz:
+    get:
+      tags: [health]
+      operationId: getReadyz
+      summary: Readiness probe
+      description: |
+        Checks that PostgreSQL and Redis answer within `RG_READINESS_TIMEOUT`.
+        The checks run concurrently. Failure details go to the service log,
+        never into the response.
+      security: [] # Probes are unauthenticated by design.
+      responses:
+        "200":
+          description: Every dependency is reachable.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+              example:
+                status: ready
+                checks: {postgres: ok, redis: ok}
+        "503":
+          description: At least one dependency is unreachable.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+              example:
+                status: not ready
+                checks: {postgres: unavailable, redis: ok}
+components:
+  headers:
+    RequestID:
+      description: The request ID, echoed from the request or generated.
+      schema:
+        type: string
+        maxLength: 64
+        pattern: "^[A-Za-z0-9._-]+$"
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ready, not ready]
+        checks:
+          type: object
+          description: State of each dependency, keyed by name.
+          additionalProperties:
+            type: string
+            enum: [ok, unavailable]

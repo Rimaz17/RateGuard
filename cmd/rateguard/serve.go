@@ -28,7 +28,7 @@ func serve() error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httptransport.NewRouter(logger),
+		Handler:           httptransport.NewRouter(httptransport.Deps{Logger: logger, ReadinessTimeout: cfg.ReadinessTimeout}),
 		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		ReadTimeout:       cfg.HTTPReadTimeout,
 		WriteTimeout:      cfg.HTTPWriteTimeout,
