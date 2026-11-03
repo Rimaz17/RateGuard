@@ -1,0 +1,6 @@
+# Normalise line endings so gofmt, the Makefile and shell scripts behave the same
+# on Windows checkouts as they do in CI and in the Linux build container.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
