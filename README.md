@@ -43,7 +43,7 @@ build or test outside Docker.
 ```bash
 git clone https://github.com/Rimaz17/RateGuard.git
 cd RateGuard
-make up      # creates .env from .env.example, builds, starts, waits for health checks
+make up      # creates .env from configs/.env.example, builds, starts, waits for health checks
 make smoke   # GET /healthz, expects 200 {"status":"ok"}
 make down
 ```
@@ -54,7 +54,7 @@ make down
 Without `make` (on Windows, for example), run the equivalent commands directly:
 
 ```bash
-cp .env.example .env
+cp configs/.env.example .env
 docker compose up -d --build --wait
 curl -i http://127.0.0.1:8080/healthz
 ```
@@ -62,7 +62,7 @@ curl -i http://127.0.0.1:8080/healthz
 ## Configuration
 
 RateGuard reads `RG_`-prefixed environment variables. A variable that is set but empty
-takes its default. [.env.example](.env.example) documents every variable, including the
+takes its default. [configs/.env.example](configs/.env.example) documents every variable, including the
 ones that only Docker Compose reads.
 
 | Variable | Default | Meaning |

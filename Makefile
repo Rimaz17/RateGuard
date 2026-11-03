@@ -17,8 +17,8 @@ help: ## List targets
 ## --- Stack ------------------------------------------------------------------
 
 .env:
-	cp .env.example .env
-	@echo "created .env from .env.example"
+	cp configs/.env.example .env
+	@echo "created .env from configs/.env.example"
 
 .PHONY: up
 up: .env ## Build and start RateGuard, Postgres and Redis; wait until healthy
