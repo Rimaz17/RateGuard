@@ -44,6 +44,12 @@ type Config struct {
 	// admin API that mints keys must never be open by accident.
 	AdminToken Secret `env:"RG_ADMIN_TOKEN,required,notEmpty"`
 
+	// TrustedProxies lists the networks, in CIDR form, whose
+	// X-Forwarded-For header is believed when identifying a caller by IP.
+	// Empty, the default, trusts no one: the header is client-controlled
+	// and would let any caller pick its own identity.
+	TrustedProxies Prefixes `env:"RG_TRUSTED_PROXIES"`
+
 	Database Database
 	Redis    Redis
 }

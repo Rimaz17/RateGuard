@@ -86,6 +86,7 @@ ones that only Docker Compose reads.
 | `RG_DATABASE_MAX_CONN_IDLE_TIME` | `5m` | Close pooled connections idle for this long |
 | `RG_REDIS_URL` | `redis://localhost:6379/0` | Redis URL; treated as a secret and never logged |
 | `RG_READINESS_TIMEOUT` | `2s` | Per-dependency timeout for the `/readyz` checks |
+| `RG_TRUSTED_PROXIES` | *(empty)* | Comma-separated CIDRs whose `X-Forwarded-For` is believed for IP identification; empty trusts none |
 | `RG_ADMIN_TOKEN` | *(required)* | Bearer token for the admin API, at least 32 characters ([ADR 0008](docs/adr/0008-admin-api-bearer-token.md)) |
 
 Every timeout must be positive. RateGuard exits at startup if any configuration value is

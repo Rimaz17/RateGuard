@@ -2,6 +2,8 @@ package config_test
 
 import (
 	"log/slog"
+	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +51,7 @@ func TestLoadDefaults(t *testing.T) {
 		},
 		Redis: config.Redis{URL: "redis://localhost:6379/0"},
 	}
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("Load() = %+v, want %+v", cfg, want)
 	}
 }
@@ -64,6 +66,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("RG_DATABASE_MAX_CONN_IDLE_TIME", "90s")
 	t.Setenv("RG_REDIS_URL", "redis://:pw@cache:6380/2")
 	t.Setenv("RG_READINESS_TIMEOUT", "750ms")
+	t.Setenv("RG_TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.7/32,,fd00::1/8 ")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -92,6 +95,14 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.ReadinessTimeout != 750*time.Millisecond {
 		t.Errorf("ReadinessTimeout = %s, want 750ms", cfg.ReadinessTimeout)
+	}
+	wantProxies := config.Prefixes{
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("192.168.1.7/32"),
+		netip.MustParsePrefix("fd00::/8"),
+	}
+	if !reflect.DeepEqual(cfg.TrustedProxies, wantProxies) {
+		t.Errorf("TrustedProxies = %v, want %v", cfg.TrustedProxies, wantProxies)
 	}
 }
 
@@ -130,6 +141,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"zero readiness timeout", "RG_READINESS_TIMEOUT", "0s", "RG_READINESS_TIMEOUT must be positive"},
 		{"empty admin token", "RG_ADMIN_TOKEN", "", "RG_ADMIN_TOKEN"},
 		{"short admin token", "RG_ADMIN_TOKEN", "too-short", "RG_ADMIN_TOKEN must be at least 32 characters, got 9"},
+		{"trusted proxy without mask", "RG_TRUSTED_PROXIES", "10.0.0.1", "parsing environment"},
+		{"trusted proxy not an address", "RG_TRUSTED_PROXIES", "lb.internal/32", "parsing environment"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
