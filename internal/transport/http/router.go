@@ -4,7 +4,6 @@
 package httptransport
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -34,12 +33,4 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/readyz", readyz(d.Logger, d.Readiness, d.ReadinessTimeout))
 
 	return r
-}
-
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	// The status line is already sent, so an encoding failure (almost always
-	// the client hanging up) has no better recovery than dropping the body.
-	_ = json.NewEncoder(w).Encode(body)
 }
