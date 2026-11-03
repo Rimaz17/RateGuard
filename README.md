@@ -99,6 +99,19 @@ Every response carries an `X-Request-ID` header. An inbound `X-Request-ID` is re
 it is at most 64 characters of `[A-Za-z0-9._-]`; otherwise RateGuard generates a new one.
 An OpenAPI contract arrives in `api/openapi.yaml` with the first handler that needs one.
 
+## Data model
+
+PostgreSQL holds the configuration: policies, clients and (from phase 2) their API
+keys. Redis holds only ephemeral bucket state. The schema lives in
+[`migrations/`](migrations) as reversible, numbered pairs.
+
+| Table | Holds |
+|---|---|
+| `policies` | Named rate limits: capacity, window, refill rate, enabled flag |
+
+Column-level detail and the conventions behind it are in
+[docs/data-model.md](docs/data-model.md).
+
 ## Development
 
 ```bash
