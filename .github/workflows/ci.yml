@@ -47,8 +47,18 @@ jobs:
       - name: coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
-  # Integration tests (testcontainers) and the migrations up/down check join
-  # this workflow in phase 1, when there is a schema and a store to test.
+  integration:
+    name: integration tests (testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # Real Postgres and Redis containers, with -race. Includes the
+      # migrations up/down/up check against a fresh database.
+      - name: go test -race -tags integration
+        run: make test-integration
 
   container:
     name: image and compose smoke test
@@ -61,8 +71,18 @@ jobs:
         run: make docker-build
       - name: make up
         run: make up
-      - name: /healthz returns 200
+      - name: /healthz and /readyz return 200
         run: make smoke
+      - name: migrate down one step and back up through the binary
+        run: make migrate-down && make migrate-up
+      - name: readiness flips when postgres stops, and recovers
+        run: |
+          docker compose stop postgres
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/readyz)"
+          echo "/readyz with postgres stopped: $code"
+          test "$code" = 503
+          docker compose start postgres
+          make smoke
       - name: compose logs
         if: failure()
         run: docker compose logs
