@@ -1,0 +1,55 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - contextcheck
+    - errname
+    - errorlint
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - sloglint
+    - unconvert
+    - usestdlibvars
+  settings:
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+        - name: error-strings
+        - name: error-naming
+        - name: receiver-naming
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: early-return
+        - name: superfluous-else
+    sloglint:
+      # Typed attributes (slog.String, slog.Any) only, never loose key-value pairs.
+      attr-only: true
+      key-naming-case: snake
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # Tests may use the bare-literal shortcuts gosec dislikes.
+      - path: _test\.go
+        linters: [gosec]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Rimaz17/RateGuard
