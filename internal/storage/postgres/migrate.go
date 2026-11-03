@@ -122,6 +122,9 @@ func (mg *Migrator) Close() error {
 // graceful stop, which halts between migrations rather than mid-file. The
 // library has no context support of its own.
 func (mg *Migrator) run(ctx context.Context, name string, op func() error) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("migrating %s: %w", name, err)
+	}
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
