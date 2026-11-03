@@ -59,7 +59,7 @@ func run() error {
 	case <-ctx.Done():
 	}
 
-	logger.Info("shutting down", slog.Duration("timeout", cfg.ShutdownTimeout))
+	logger.Info("shutting down", slog.String("timeout", cfg.ShutdownTimeout.String()))
 	// The signal context is already cancelled, so the drain deadline needs a
 	// fresh root; this is main, the one place that may create one.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
