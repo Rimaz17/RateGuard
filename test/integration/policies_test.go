@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/Rimaz17/RateGuard/internal/domain"
 	"github.com/Rimaz17/RateGuard/internal/storage/postgres"
 )
@@ -119,9 +117,7 @@ func TestPoliciesConstraintsRejectBadRows(t *testing.T) {
 			np := freePolicy()
 			np.Name = fmt.Sprintf("policy %d", i)
 			tt.mutate(&np)
-			_, err := repo.Create(t.Context(), np)
-			var pgErr *pgconn.PgError
-			if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != tt.constraint {
+			if _, err := repo.Create(t.Context(), np); !isCheckViolation(err, tt.constraint) {
 				t.Errorf("Create error = %v, want check violation of %s", err, tt.constraint)
 			}
 		})
