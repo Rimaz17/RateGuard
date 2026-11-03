@@ -2,7 +2,6 @@ package httptransport_test
 
 import (
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +12,7 @@ import (
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	srv := httptest.NewServer(httptransport.NewRouter(logger))
 	t.Cleanup(srv.Close)
 	return srv
@@ -22,7 +21,11 @@ func newTestServer(t *testing.T) *httptest.Server {
 func TestHealthz(t *testing.T) {
 	srv := newTestServer(t)
 
-	resp, err := http.Get(srv.URL + "/healthz")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}

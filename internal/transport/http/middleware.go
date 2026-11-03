@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -69,29 +70,34 @@ func newRequestID() string {
 func Recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer func() {
-				rec := recover()
-				if rec == nil {
-					return
-				}
-				if rec == http.ErrAbortHandler {
-					// net/http uses this sentinel to abort a response on purpose.
-					panic(rec)
-				}
-				id := RequestIDFromContext(r.Context())
-				logger.ErrorContext(r.Context(), "handler panic",
-					slog.String("request_id", id),
-					slog.String("method", r.Method),
-					slog.String("path", r.URL.Path),
-					slog.Any("panic", rec),
-					slog.String("stack", string(debug.Stack())),
-				)
-				writeJSON(w, http.StatusInternalServerError, map[string]string{
-					"error":      "internal server error",
-					"request_id": id,
-				})
-			}()
+			defer recoverPanic(logger, w, r)
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// recoverPanic must be deferred directly: recover only stops a panic when
+// called by the deferred function itself.
+func recoverPanic(logger *slog.Logger, w http.ResponseWriter, r *http.Request) {
+	rec := recover()
+	if rec == nil {
+		return
+	}
+	if err, ok := rec.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+		// net/http uses this sentinel to abort a response on purpose.
+		panic(rec)
+	}
+	ctx := r.Context()
+	id := RequestIDFromContext(ctx)
+	logger.ErrorContext(ctx, "handler panic",
+		slog.String("request_id", id),
+		slog.String("method", r.Method),
+		slog.String("path", r.URL.Path),
+		slog.Any("panic", rec),
+		slog.String("stack", string(debug.Stack())),
+	)
+	writeJSON(w, http.StatusInternalServerError, map[string]string{
+		"error":      "internal server error",
+		"request_id": id,
+	})
 }

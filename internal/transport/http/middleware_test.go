@@ -3,7 +3,7 @@ package httptransport_test
 import (
 	"bytes"
 	"encoding/json"
-	"io"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +35,7 @@ func TestRequestID(t *testing.T) {
 				seen = httptransport.RequestIDFromContext(r.Context())
 			}))
 
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 			if tt.inbound != "" {
 				req.Header.Set(httptransport.RequestIDHeader, tt.inbound)
 			}
@@ -64,7 +64,7 @@ func TestRequestIDsAreUnique(t *testing.T) {
 	seen := make(map[string]bool)
 	for range 1000 {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 		id := rec.Header().Get(httptransport.RequestIDHeader)
 		if seen[id] {
 			t.Fatalf("duplicate request ID %q", id)
@@ -88,7 +88,7 @@ func TestRecovererHidesPanicFromClient(t *testing.T) {
 	})))
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/boom", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/boom", nil))
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -110,15 +110,15 @@ func TestRecovererHidesPanicFromClient(t *testing.T) {
 }
 
 func TestRecovererRepanicsOnAbortHandler(t *testing.T) {
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	h := httptransport.Recoverer(logger)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic(http.ErrAbortHandler)
 	}))
 
 	defer func() {
-		if rec := recover(); rec != http.ErrAbortHandler {
+		if rec, _ := recover().(error); !errors.Is(rec, http.ErrAbortHandler) {
 			t.Errorf("recovered %v, want http.ErrAbortHandler to propagate", rec)
 		}
 	}()
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 }
