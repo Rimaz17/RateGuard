@@ -73,6 +73,13 @@ jobs:
         run: make up
       - name: /healthz and /readyz return 200
         run: make smoke
+      - name: admin api rejects a missing token and registers a client
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"name":"CI smoke"}' http://127.0.0.1:8080/v1/clients)"
+          echo "POST /v1/clients without a token: $code"
+          test "$code" = 401
+          token="$(sed -n 's/^RG_ADMIN_TOKEN=//p' .env)"
+          curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"name":"CI smoke"}' http://127.0.0.1:8080/v1/clients | grep -q '"key":"rg_cis_'
       - name: migrate down one step and back up through the binary
         run: make migrate-down && make migrate-up
       - name: readiness flips when postgres stops, and recovers
