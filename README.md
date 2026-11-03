@@ -10,7 +10,7 @@ make an HTTP call can use it.
 
 > **Status: phase 0 (foundations).** The service builds, runs in Docker Compose next to
 > Postgres and Redis, and serves `GET /healthz`. Rate limiting itself is not implemented
-> yet. [PROGRESS.md](PROGRESS.md) tracks the build phase by phase.
+> yet.
 
 ## Architecture
 
