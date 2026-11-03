@@ -4,6 +4,19 @@
 name: rateguard
 
 services:
+  # One-shot job: applies the migrations embedded in the image, then exits.
+  # RateGuard waits for it to succeed, so it never serves an old schema.
+  migrate:
+    build: .
+    image: rateguard:dev
+    command: ["migrate", "up"]
+    environment:
+      RG_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   rateguard:
     build: .
     image: rateguard:dev
@@ -27,6 +40,8 @@ services:
       RG_REDIS_URL: redis://redis:6379/0
       RG_READINESS_TIMEOUT: ${RG_READINESS_TIMEOUT:-}
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
