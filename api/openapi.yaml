@@ -10,12 +10,19 @@ info:
     Every response carries an `X-Request-ID` header. An inbound `X-Request-ID`
     of at most 64 characters from `[A-Za-z0-9._-]` is reused; anything else is
     replaced with a generated ID.
+
+    Admin routes (`/v1/clients`) require `Authorization: Bearer <RG_ADMIN_TOKEN>`.
+    Every error has the same body: `{"error": "...", "request_id": "..."}`.
 servers:
   - url: http://127.0.0.1:8080
     description: Local Docker Compose stack
+security:
+  - adminToken: []
 tags:
   - name: health
     description: Liveness and readiness probes.
+  - name: clients
+    description: Register client applications and manage their API keys.
 paths:
   /healthz:
     get:
@@ -69,7 +76,148 @@ paths:
               example:
                 status: not ready
                 checks: {postgres: unavailable, redis: ok}
+  /v1/clients:
+    post:
+      tags: [clients]
+      operationId: registerClient
+      summary: Register a client application
+      description: |
+        Creates the client and issues its first API key in one call. The full
+        key is in this response and nowhere else: RateGuard stores only its
+        SHA-256 digest, so it cannot be shown again. A new client has no
+        policy until one is assigned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterClientRequest"
+      responses:
+        "201":
+          description: Registered. Store `api_key.key` now; it cannot be retrieved later.
+          headers:
+            Location:
+              description: The new client's URL.
+              schema: {type: string}
+            Cache-Control:
+              description: Always `no-store`, because the body carries a secret.
+              schema: {type: string, const: no-store}
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterClientResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [clients]
+      operationId: listClients
+      summary: List client applications
+      description: Clients in registration order, one page at a time.
+      parameters:
+        - name: limit
+          in: query
+          description: Page size.
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: after
+          in: query
+          description: The `next_after` value from the previous page.
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: One page of clients.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/clients/{clientID}:
+    parameters:
+      - $ref: "#/components/parameters/ClientID"
+    get:
+      tags: [clients]
+      operationId: getClient
+      summary: Get a client application
+      responses:
+        "200":
+          description: The client.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
+  securitySchemes:
+    adminToken:
+      type: http
+      scheme: bearer
+      description: The value of `RG_ADMIN_TOKEN` (ADR 0008).
+  parameters:
+    ClientID:
+      name: clientID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  responses:
+    BadRequest:
+      description: The request is malformed or fails validation.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+          example: {error: name is required, request_id: 3f1c2a9e0b7d4c6e8a5f1b2c3d4e5f60}
+    Unauthorized:
+      description: The admin token is missing or wrong.
+      headers:
+        WWW-Authenticate:
+          schema: {type: string}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    PayloadTooLarge:
+      description: The body is larger than 64 KiB.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    UnsupportedMediaType:
+      description: The body is not `application/json`.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    InternalError:
+      description: Something failed inside RateGuard. The details are in the service log under the request ID.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
   headers:
     RequestID:
       description: The request ID, echoed from the request or generated.
@@ -98,3 +246,83 @@ components:
           additionalProperties:
             type: string
             enum: [ok, unavailable]
+    Error:
+      type: object
+      description: The body of every error response.
+      required: [error, request_id]
+      properties:
+        error:
+          type: string
+          description: A short, client-safe message. It never contains internals.
+        request_id:
+          type: string
+          description: Quote this when reporting a problem; it matches the service log.
+    RegisterClientRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Surrounding whitespace is trimmed. Its first three letters or digits become the key tag (`rg_cus_` for "Customer App").
+          minLength: 1
+          maxLength: 100
+          example: Customer App
+    Client:
+      type: object
+      required: [id, name, policy_id, status, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        policy_id:
+          type: [string, "null"]
+          format: uuid
+          description: The assigned policy, or null until one is assigned.
+        status: {type: string, enum: [active, disabled]}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ClientList:
+      type: object
+      required: [clients]
+      properties:
+        clients:
+          type: array
+          items: {$ref: "#/components/schemas/Client"}
+        next_after:
+          type: string
+          format: uuid
+          description: Present when the page is full. Pass it as `after` for the next page.
+    APIKey:
+      type: object
+      description: A key, described by its public prefix. The key itself is never returned again after creation.
+      required: [id, client_id, prefix, active, created_at, revoked_at]
+      properties:
+        id: {type: string, format: uuid}
+        client_id: {type: string, format: uuid}
+        prefix:
+          type: string
+          description: The public part of the key, safe to log.
+          pattern: "^rg_[a-z0-9]{1,3}_[a-z2-7]{16}$"
+          example: rg_cus_7hq2mfx4kd5ta3wb
+        active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+    IssuedAPIKey:
+      description: A newly issued key, with its full value. This is the only time the value is returned.
+      allOf:
+        - $ref: "#/components/schemas/APIKey"
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: "The full key. Send it as `Authorization: Bearer <key>`."
+              pattern: "^rg_[a-z0-9]{1,3}_[a-z2-7]{16}_[a-z2-7]{52}$"
+    RegisterClientResponse:
+      type: object
+      required: [client, api_key]
+      properties:
+        client: {$ref: "#/components/schemas/Client"}
+        api_key: {$ref: "#/components/schemas/IssuedAPIKey"}
