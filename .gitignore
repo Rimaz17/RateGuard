@@ -1,0 +1,28 @@
+# Build output
+/rateguard
+*.exe
+bin/
+dist/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Test and coverage output
+*.out
+coverage.*
+*.test
+
+# Editors and tooling
+.idea/
+.vscode/
+.claude/settings.local.json
+
+# OS cruft
+Thumbs.db
+.DS_Store
+
+# Scratch
+*.log
+tmp/

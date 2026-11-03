@@ -1,0 +1,14 @@
+# Keep the build context to what the Go build needs, and keep secrets out of it.
+.git
+.github
+.claude
+.env
+.env.*
+bin/
+dist/
+tmp/
+docs/
+test/
+*.md
+*.out
+coverage.*
