@@ -105,14 +105,14 @@ commit as any handler.
 
 ## Data model
 
-PostgreSQL holds the configuration: policies, clients and (from phase 2) their API
-keys. Redis holds only ephemeral bucket state. The schema lives in
+PostgreSQL holds the configuration: policies, clients and their API keys. Redis holds only ephemeral bucket state. The schema lives in
 [`migrations/`](migrations) as reversible, numbered pairs.
 
 | Table | Holds |
 |---|---|
 | `policies` | Named rate limits: capacity, window, refill rate, enabled flag |
 | `clients` | Registered applications, their status and assigned policy |
+| `api_keys` | Each client's keys: public prefix, SHA-256 digest, revocation time |
 
 Column-level detail and the conventions behind it are in
 [docs/data-model.md](docs/data-model.md).
