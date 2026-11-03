@@ -39,6 +39,7 @@ services:
       RG_DATABASE_MAX_CONN_IDLE_TIME: ${RG_DATABASE_MAX_CONN_IDLE_TIME:-}
       RG_REDIS_URL: redis://redis:6379/0
       RG_READINESS_TIMEOUT: ${RG_READINESS_TIMEOUT:-}
+      RG_ADMIN_TOKEN: ${RG_ADMIN_TOKEN:?set RG_ADMIN_TOKEN in .env (see configs/.env.example)}
     depends_on:
       migrate:
         condition: service_completed_successfully

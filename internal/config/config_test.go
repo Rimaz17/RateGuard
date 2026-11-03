@@ -9,14 +9,18 @@ import (
 	"github.com/Rimaz17/RateGuard/internal/config"
 )
 
-// testDatabaseURL stands in for the one variable that has no default.
-const testDatabaseURL = "postgres://rateguard:secret@localhost:5432/rateguard"
+// These stand in for the variables that have no default.
+const (
+	testDatabaseURL = "postgres://rateguard:secret@localhost:5432/rateguard"
+	testAdminToken  = "test-admin-token-0123456789abcdef"
+)
 
 // setRequired sets every variable that has no default, so that each test can
 // focus on the variables it is about.
 func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("RG_DATABASE_URL", testDatabaseURL)
+	t.Setenv("RG_ADMIN_TOKEN", testAdminToken)
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -36,6 +40,7 @@ func TestLoadDefaults(t *testing.T) {
 		ShutdownTimeout:       15 * time.Second,
 		LogLevel:              slog.LevelInfo,
 		ReadinessTimeout:      2 * time.Second,
+		AdminToken:            testAdminToken,
 		Database: config.Database{
 			URL:             testDatabaseURL,
 			MaxConns:        10,
@@ -123,6 +128,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"zero conn lifetime", "RG_DATABASE_MAX_CONN_LIFETIME", "0s", "RG_DATABASE_MAX_CONN_LIFETIME must be positive"},
 		{"negative conn idle time", "RG_DATABASE_MAX_CONN_IDLE_TIME", "-5m", "RG_DATABASE_MAX_CONN_IDLE_TIME must be positive"},
 		{"zero readiness timeout", "RG_READINESS_TIMEOUT", "0s", "RG_READINESS_TIMEOUT must be positive"},
+		{"empty admin token", "RG_ADMIN_TOKEN", "", "RG_ADMIN_TOKEN"},
+		{"short admin token", "RG_ADMIN_TOKEN", "too-short", "RG_ADMIN_TOKEN must be at least 32 characters, got 9"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,12 +148,36 @@ func TestLoadRejectsInvalid(t *testing.T) {
 }
 
 func TestLoadRequiresDatabaseURL(t *testing.T) {
+	t.Setenv("RG_ADMIN_TOKEN", testAdminToken)
 	_, err := config.Load()
 	if err == nil {
 		t.Fatal("Load() without RG_DATABASE_URL: want error, got nil")
 	}
 	if !strings.Contains(err.Error(), "RG_DATABASE_URL") {
 		t.Errorf("Load() error = %q, want it to name RG_DATABASE_URL", err)
+	}
+}
+
+func TestLoadRequiresAdminToken(t *testing.T) {
+	t.Setenv("RG_DATABASE_URL", testDatabaseURL)
+	_, err := config.Load()
+	if err == nil || !strings.Contains(err.Error(), "RG_ADMIN_TOKEN") {
+		t.Fatalf("Load() without RG_ADMIN_TOKEN: error = %v, want one naming RG_ADMIN_TOKEN", err)
+	}
+}
+
+func TestLoadAcceptsMinimumLengthAdminToken(t *testing.T) {
+	setRequired(t)
+	t.Setenv("RG_ADMIN_TOKEN", strings.Repeat("x", config.MinAdminTokenLen))
+	if _, err := config.Load(); err != nil {
+		t.Errorf("Load() with a %d-character token: %v", config.MinAdminTokenLen, err)
+	}
+}
+
+func TestLoadErrorsNeverContainSecrets(t *testing.T) {
+	t.Setenv("RG_ADMIN_TOKEN", "hunter2-short")
+	if _, err := config.Load(); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("Load() error = %v, want an error that does not quote the token", err)
 	}
 }
 

@@ -12,6 +12,10 @@ import (
 	"github.com/caarlos0/env/v11"
 )
 
+// MinAdminTokenLen is the shortest admin token accepted. 32 characters of
+// `openssl rand -hex 32` output carry 128 bits.
+const MinAdminTokenLen = 32
+
 // Config is the complete runtime configuration for one RateGuard instance.
 type Config struct {
 	// HTTPAddr is the TCP address the HTTP server listens on.
@@ -34,6 +38,11 @@ type Config struct {
 	// ReadinessTimeout bounds each dependency check behind /readyz, so a
 	// hung dependency makes the probe fail fast instead of hanging it.
 	ReadinessTimeout time.Duration `env:"RG_READINESS_TIMEOUT" envDefault:"2s"`
+
+	// AdminToken is the bearer token the admin API (/v1/clients and,
+	// later, /v1/policies) requires (ADR 0008). There is no default: an
+	// admin API that mints keys must never be open by accident.
+	AdminToken Secret `env:"RG_ADMIN_TOKEN,required,notEmpty"`
 
 	Database Database
 	Redis    Redis
@@ -107,6 +116,9 @@ func (c Config) validate() error {
 		namedDuration{"RG_SHUTDOWN_TIMEOUT", c.ShutdownTimeout},
 		namedDuration{"RG_READINESS_TIMEOUT", c.ReadinessTimeout},
 	)
+	if n := len(c.AdminToken.Value()); n > 0 && n < MinAdminTokenLen {
+		errs = append(errs, fmt.Errorf("RG_ADMIN_TOKEN must be at least %d characters, got %d", MinAdminTokenLen, n))
+	}
 	errs = append(errs, c.Database.validate())
 	return errors.Join(errs...)
 }
