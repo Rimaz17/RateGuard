@@ -63,11 +63,17 @@ func (s *stubRegistry) List(_ context.Context, page domain.Page) ([]domain.Clien
 
 func newAdminServer(t *testing.T, reg httptransport.ClientRegistry) *httptest.Server {
 	t.Helper()
+	return newAdminServerWithKeys(t, reg, nil)
+}
+
+func newAdminServerWithKeys(t *testing.T, reg httptransport.ClientRegistry, keys httptransport.KeyManager) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewServer(httptransport.NewRouter(httptransport.Deps{
 		Logger:           slog.New(slog.DiscardHandler),
 		ReadinessTimeout: time.Second,
 		AdminToken:       adminToken,
 		Clients:          reg,
+		Keys:             keys,
 	}))
 	t.Cleanup(srv.Close)
 	return srv

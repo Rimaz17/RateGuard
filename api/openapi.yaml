@@ -171,6 +171,91 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/clients/{clientID}/keys:
+    parameters:
+      - $ref: "#/components/parameters/ClientID"
+    get:
+      tags: [clients]
+      operationId: listClientKeys
+      summary: List a client's API keys
+      description: |
+        Every key the client has held, revoked ones included, oldest first.
+        Keys are described by their public prefix; the full value is never
+        returned here.
+      responses:
+        "200":
+          description: The client's keys.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [clients]
+      operationId: issueClientKey
+      summary: Issue another API key (rotate)
+      description: |
+        Rotation without downtime: issue a new key, move callers onto it,
+        then revoke the old key with DELETE. Both keys work in between. A
+        client may hold at most two active keys, so a third is refused
+        with 409 until one is revoked. The full key is in this response
+        only.
+      responses:
+        "201":
+          description: Issued. Store `key` now; it cannot be retrieved later.
+          headers:
+            Cache-Control:
+              description: Always `no-store`, because the body carries a secret.
+              schema: {type: string, const: no-store}
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedAPIKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/clients/{clientID}/keys/{keyID}:
+    parameters:
+      - $ref: "#/components/parameters/ClientID"
+      - name: keyID
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    delete:
+      tags: [clients]
+      operationId: revokeClientKey
+      summary: Revoke an API key
+      description: |
+        Requests that present the key fail from now on. Revoking a key that
+        is already revoked succeeds and keeps the original revocation time.
+        A key that belongs to a different client is treated as not found.
+      responses:
+        "204":
+          description: Revoked.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
   securitySchemes:
     adminToken:
@@ -200,6 +285,11 @@ components:
           schema: {$ref: "#/components/schemas/Error"}
     NotFound:
       description: No such resource.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Conflict:
+      description: The request clashes with current state, such as a client that already has two active keys.
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
@@ -320,6 +410,13 @@ components:
               type: string
               description: "The full key. Send it as `Authorization: Bearer <key>`."
               pattern: "^rg_[a-z0-9]{1,3}_[a-z2-7]{16}_[a-z2-7]{52}$"
+    APIKeyList:
+      type: object
+      required: [api_keys]
+      properties:
+        api_keys:
+          type: array
+          items: {$ref: "#/components/schemas/APIKey"}
     RegisterClientResponse:
       type: object
       required: [client, api_key]

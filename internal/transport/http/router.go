@@ -29,6 +29,10 @@ type Deps struct {
 	// Clients serves the /v1/clients admin routes. When nil, they are not
 	// mounted, which suits tests that exercise only the probes.
 	Clients ClientRegistry
+
+	// Keys serves /v1/clients/{clientID}/keys. It is mounted only
+	// alongside Clients.
+	Keys KeyManager
 }
 
 // NewRouter builds the HTTP handler for the whole service.
@@ -47,6 +51,12 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/", ch.register)
 			r.Get("/", ch.list)
 			r.Get("/{clientID}", ch.get)
+			if d.Keys != nil {
+				kh := keyHandlers{logger: d.Logger, keys: d.Keys}
+				r.Get("/{clientID}/keys", kh.list)
+				r.Post("/{clientID}/keys", kh.issue)
+				r.Delete("/{clientID}/keys/{keyID}", kh.revoke)
+			}
 		})
 	}
 
