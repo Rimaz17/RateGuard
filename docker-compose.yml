@@ -19,6 +19,11 @@ services:
       RG_HTTP_IDLE_TIMEOUT: ${RG_HTTP_IDLE_TIMEOUT:-}
       RG_SHUTDOWN_TIMEOUT: ${RG_SHUTDOWN_TIMEOUT:-}
       RG_LOG_LEVEL: ${RG_LOG_LEVEL:-}
+      # Built from the Postgres credentials below so they live in one place.
+      RG_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      RG_DATABASE_MAX_CONNS: ${RG_DATABASE_MAX_CONNS:-}
+      RG_DATABASE_MAX_CONN_LIFETIME: ${RG_DATABASE_MAX_CONN_LIFETIME:-}
+      RG_DATABASE_MAX_CONN_IDLE_TIME: ${RG_DATABASE_MAX_CONN_IDLE_TIME:-}
     depends_on:
       postgres:
         condition: service_healthy

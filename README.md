@@ -74,6 +74,10 @@ ones that only Docker Compose reads.
 | `RG_HTTP_IDLE_TIMEOUT` | `120s` | Keep-alive idle timeout |
 | `RG_SHUTDOWN_TIMEOUT` | `15s` | Grace period for in-flight requests on SIGINT/SIGTERM |
 | `RG_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `RG_DATABASE_URL` | *(required)* | PostgreSQL connection string; treated as a secret and never logged |
+| `RG_DATABASE_MAX_CONNS` | `10` | Connection pool size (at least 1) |
+| `RG_DATABASE_MAX_CONN_LIFETIME` | `30m` | Recycle pooled connections after this long |
+| `RG_DATABASE_MAX_CONN_IDLE_TIME` | `5m` | Close pooled connections idle for this long |
 
 Every timeout must be positive. RateGuard exits at startup if any configuration value is
 invalid.
