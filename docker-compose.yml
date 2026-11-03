@@ -24,6 +24,8 @@ services:
       RG_DATABASE_MAX_CONNS: ${RG_DATABASE_MAX_CONNS:-}
       RG_DATABASE_MAX_CONN_LIFETIME: ${RG_DATABASE_MAX_CONN_LIFETIME:-}
       RG_DATABASE_MAX_CONN_IDLE_TIME: ${RG_DATABASE_MAX_CONN_IDLE_TIME:-}
+      RG_REDIS_URL: redis://redis:6379/0
+      RG_READINESS_TIMEOUT: ${RG_READINESS_TIMEOUT:-}
     depends_on:
       postgres:
         condition: service_healthy

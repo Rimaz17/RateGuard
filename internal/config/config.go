@@ -31,7 +31,19 @@ type Config struct {
 	// LogLevel accepts debug, info, warn or error.
 	LogLevel slog.Level `env:"RG_LOG_LEVEL" envDefault:"info"`
 
+	// ReadinessTimeout bounds each dependency check behind /readyz, so a
+	// hung dependency makes the probe fail fast instead of hanging it.
+	ReadinessTimeout time.Duration `env:"RG_READINESS_TIMEOUT" envDefault:"2s"`
+
 	Database Database
+	Redis    Redis
+}
+
+// Redis configures the Redis client.
+type Redis struct {
+	// URL is a redis:// or rediss:// URL. It can carry a password, so it is
+	// a Secret even though the default has none.
+	URL Secret `env:"RG_REDIS_URL" envDefault:"redis://localhost:6379/0"`
 }
 
 // Database configures the PostgreSQL connection pool. It is a separate type
@@ -93,6 +105,7 @@ func (c Config) validate() error {
 		namedDuration{"RG_HTTP_WRITE_TIMEOUT", c.HTTPWriteTimeout},
 		namedDuration{"RG_HTTP_IDLE_TIMEOUT", c.HTTPIdleTimeout},
 		namedDuration{"RG_SHUTDOWN_TIMEOUT", c.ShutdownTimeout},
+		namedDuration{"RG_READINESS_TIMEOUT", c.ReadinessTimeout},
 	)
 	errs = append(errs, c.Database.validate())
 	return errors.Join(errs...)

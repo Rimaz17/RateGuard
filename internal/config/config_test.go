@@ -35,12 +35,14 @@ func TestLoadDefaults(t *testing.T) {
 		HTTPIdleTimeout:       120 * time.Second,
 		ShutdownTimeout:       15 * time.Second,
 		LogLevel:              slog.LevelInfo,
+		ReadinessTimeout:      2 * time.Second,
 		Database: config.Database{
 			URL:             testDatabaseURL,
 			MaxConns:        10,
 			MaxConnLifetime: 30 * time.Minute,
 			MaxConnIdleTime: 5 * time.Minute,
 		},
+		Redis: config.Redis{URL: "redis://localhost:6379/0"},
 	}
 	if cfg != want {
 		t.Errorf("Load() = %+v, want %+v", cfg, want)
@@ -55,6 +57,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("RG_LOG_LEVEL", "debug")
 	t.Setenv("RG_DATABASE_MAX_CONNS", "25")
 	t.Setenv("RG_DATABASE_MAX_CONN_IDLE_TIME", "90s")
+	t.Setenv("RG_REDIS_URL", "redis://:pw@cache:6380/2")
+	t.Setenv("RG_READINESS_TIMEOUT", "750ms")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -77,6 +81,12 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.Database.MaxConnIdleTime != 90*time.Second {
 		t.Errorf("Database.MaxConnIdleTime = %s, want 1m30s", cfg.Database.MaxConnIdleTime)
+	}
+	if got := cfg.Redis.URL.Value(); got != "redis://:pw@cache:6380/2" {
+		t.Errorf("Redis.URL = %q, want %q", got, "redis://:pw@cache:6380/2")
+	}
+	if cfg.ReadinessTimeout != 750*time.Millisecond {
+		t.Errorf("ReadinessTimeout = %s, want 750ms", cfg.ReadinessTimeout)
 	}
 }
 
@@ -112,6 +122,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"max conns overflows int32", "RG_DATABASE_MAX_CONNS", "3000000000", "parsing environment"},
 		{"zero conn lifetime", "RG_DATABASE_MAX_CONN_LIFETIME", "0s", "RG_DATABASE_MAX_CONN_LIFETIME must be positive"},
 		{"negative conn idle time", "RG_DATABASE_MAX_CONN_IDLE_TIME", "-5m", "RG_DATABASE_MAX_CONN_IDLE_TIME must be positive"},
+		{"zero readiness timeout", "RG_READINESS_TIMEOUT", "0s", "RG_READINESS_TIMEOUT must be positive"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

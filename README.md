@@ -78,6 +78,8 @@ ones that only Docker Compose reads.
 | `RG_DATABASE_MAX_CONNS` | `10` | Connection pool size (at least 1) |
 | `RG_DATABASE_MAX_CONN_LIFETIME` | `30m` | Recycle pooled connections after this long |
 | `RG_DATABASE_MAX_CONN_IDLE_TIME` | `5m` | Close pooled connections idle for this long |
+| `RG_REDIS_URL` | `redis://localhost:6379/0` | Redis URL; treated as a secret and never logged |
+| `RG_READINESS_TIMEOUT` | `2s` | Per-dependency timeout for the `/readyz` checks |
 
 Every timeout must be positive. RateGuard exits at startup if any configuration value is
 invalid.
