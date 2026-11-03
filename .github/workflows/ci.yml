@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOLANGCI_LINT_VERSION: v2.15.0 # keep in step with the Makefile
+
+jobs:
+  lint:
+    name: format, vet, lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: make fmt-check
+      - name: go vet
+        run: make vet
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  test:
+    name: build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: go build
+        run: go build ./...
+      - name: go test (race)
+        run: go test -race -coverprofile=coverage.out ./...
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+
+  # Integration tests (testcontainers) and the migrations up/down check join
+  # this workflow in phase 1, when there is a schema and a store to test.
+
+  container:
+    name: image and compose smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: go version matches Dockerfile
+        run: make check-go-version
+      - name: docker build
+        run: make docker-build
+      - name: make up
+        run: make up
+      - name: /healthz returns 200
+        run: make smoke
+      - name: compose logs
+        if: failure()
+        run: docker compose logs
+      - name: make down
+        if: always()
+        run: make down
