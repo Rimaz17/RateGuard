@@ -23,8 +23,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/Rimaz17/RateGuard/internal/storage/postgres"
 )
 
 // postgresImage must match docker-compose.yml so the tests run against what
@@ -127,4 +130,27 @@ func newDatabase(t *testing.T) string {
 	}
 	u.Path = "/" + name
 	return u.String()
+}
+
+// migratedPool creates a fresh database, applies every migration and returns
+// a pool on it that is closed when the test ends.
+func migratedPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dbURL := newDatabase(t)
+
+	if err := newMigrator(t, dbURL).Up(t.Context()); err != nil {
+		t.Fatalf("migrating up: %v", err)
+	}
+
+	pool, err := postgres.NewPool(t.Context(), postgres.PoolConfig{
+		URL:             dbURL,
+		MaxConns:        8,
+		MaxConnLifetime: time.Hour,
+		MaxConnIdleTime: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("creating pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
