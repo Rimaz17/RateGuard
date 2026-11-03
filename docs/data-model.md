@@ -31,3 +31,16 @@ A named rate limit, such as Free, Premium or Enterprise. Policies are disabled
 | `refill_rate` | `DOUBLE PRECISION` | Tokens returned per second. Finite and greater than 0 |
 | `enabled` | `BOOLEAN` | Default `true` |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | Default `now()` |
+
+## `clients`
+
+A registered application that calls RateGuard, such as a customer app or a
+merchant app.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` | Primary key, `uuidv7()` |
+| `name` | `TEXT` | Not blank, at most 100 characters. Not unique: the ID is the identity |
+| `policy_id` | `UUID` | References `policies(id)`. `NULL` until a policy is assigned. Indexed |
+| `status` | `TEXT` | `active` (default) or `disabled` |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` | Default `now()` |

@@ -108,6 +108,7 @@ keys. Redis holds only ephemeral bucket state. The schema lives in
 | Table | Holds |
 |---|---|
 | `policies` | Named rate limits: capacity, window, refill rate, enabled flag |
+| `clients` | Registered applications, their status and assigned policy |
 
 Column-level detail and the conventions behind it are in
 [docs/data-model.md](docs/data-model.md).
