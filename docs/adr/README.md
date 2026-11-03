@@ -13,6 +13,7 @@ decision itself and its consequences. ADRs 0001–0006 are the six binding decis
 | [0005](0005-policy-cache-ttl-pubsub-singleflight.md) | Policy cache with a 10s TTL, pub/sub invalidation and singleflight |
 | [0006](0006-api-keys-sha256-two-active.md) | API keys hashed with SHA-256, two valid at once |
 | [0007](0007-migrations-run-as-a-separate-step.md) | Migrations run from the binary, as a separate step |
+| [0008](0008-admin-api-bearer-token.md) | The admin API requires a shared bearer token |
 
 New ADRs take the next number. To change an accepted ADR, mark it superseded and write
 a new one rather than editing it in place.
