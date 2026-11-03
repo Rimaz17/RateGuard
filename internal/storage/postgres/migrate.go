@@ -70,12 +70,27 @@ func (mg *Migrator) Up(ctx context.Context) error {
 	return mg.run(ctx, "up", mg.m.Up)
 }
 
-// Down reverts the most recent steps migrations.
+// Down reverts the most recent steps migrations. Asking for more steps than
+// are applied reverts them all and then reports the shortfall as an error.
 func (mg *Migrator) Down(ctx context.Context, steps int) error {
 	if steps < 1 {
 		return fmt.Errorf("down needs at least 1 step, got %d", steps)
 	}
-	return mg.run(ctx, "down", func() error { return mg.m.Steps(-steps) })
+	version, _, err := mg.Version()
+	if err != nil {
+		return err
+	}
+	if version == 0 {
+		return errors.New("migrating down: no migrations are applied")
+	}
+	return mg.run(ctx, "down", func() error {
+		err := mg.m.Steps(-steps)
+		var short migrate.ErrShortLimit
+		if errors.As(err, &short) {
+			return fmt.Errorf("reverted every applied migration, %d fewer than the %d steps asked for", short.Short, steps)
+		}
+		return err
+	})
 }
 
 // DownAll reverts every applied migration, leaving an empty schema. It
