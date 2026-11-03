@@ -1,6 +1,6 @@
 // Package config loads and validates RateGuard's runtime configuration from
 // environment variables. Every variable is prefixed RG_ and documented in
-// .env.example.
+// configs/.env.example.
 package config
 
 import (
