@@ -14,6 +14,8 @@ import (
 // NewRouter builds the HTTP handler for the whole service.
 func NewRouter(logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
+	r.Use(RequestID)
+	r.Use(Recoverer(logger))
 
 	r.Get("/healthz", healthz)
 

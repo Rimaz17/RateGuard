@@ -34,6 +34,9 @@ func TestHealthz(t *testing.T) {
 	if got := resp.Header.Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", got)
 	}
+	if resp.Header.Get(httptransport.RequestIDHeader) == "" {
+		t.Errorf("response is missing the %s header", httptransport.RequestIDHeader)
+	}
 	var body map[string]string
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decoding body: %v", err)
