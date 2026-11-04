@@ -110,11 +110,21 @@ func validateRequest(v *validator.Validate, dst any) *requestError {
 		return badRequest("request is invalid")
 	}
 	fe := fieldErrs[0]
+	// For strings, min and max count characters; for numbers they bound
+	// the value.
+	unit := ""
+	if fe.Kind() == reflect.String {
+		unit = " characters"
+	}
 	switch fe.Tag() {
 	case "required":
 		return badRequest("%s is required", fe.Field())
-	case "max":
-		return badRequest("%s must be at most %s characters", fe.Field(), fe.Param())
+	case "max", "lte":
+		return badRequest("%s must be at most %s%s", fe.Field(), fe.Param(), unit)
+	case "min", "gte":
+		return badRequest("%s must be at least %s%s", fe.Field(), fe.Param(), unit)
+	case "gt":
+		return badRequest("%s must be greater than %s", fe.Field(), fe.Param())
 	default:
 		return badRequest("%s is invalid", fe.Field())
 	}
