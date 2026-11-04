@@ -49,6 +49,14 @@ type Deps struct {
 	// Assigner serves PUT /v1/clients/{clientID}/policy. It is mounted only
 	// alongside Clients.
 	Assigner PolicyAssigner
+
+	// Decider serves POST /v1/check, the hot path. It is mounted only when
+	// Authenticator is set too, which identifies callers by API key;
+	// callers without one are identified by IP, trusting X-Forwarded-For
+	// only from TrustedProxies.
+	Decider        Decider
+	Authenticator  Authenticator
+	TrustedProxies TrustedProxies
 }
 
 // NewRouter builds the HTTP handler for the whole service.
@@ -63,6 +71,11 @@ func NewRouter(d Deps) http.Handler {
 		// Unauthenticated like the probes: its labels never name a client
 		// or a key (ADR 0014).
 		r.Method(http.MethodGet, "/metrics", d.Metrics)
+	}
+
+	if d.Decider != nil && d.Authenticator != nil {
+		dh := decisionHandlers{logger: d.Logger, decider: d.Decider}
+		r.With(Identify(d.Logger, d.Authenticator, d.TrustedProxies)).Post("/v1/check", dh.check)
 	}
 
 	if d.Clients != nil {

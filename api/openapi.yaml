@@ -20,6 +20,10 @@ servers:
 security:
   - adminToken: []
 tags:
+  - name: decisions
+    description: |
+      The hot path: whether a request may proceed. Decisions read no
+      database and are shared by every RateGuard instance through Redis.
   - name: health
     description: Liveness and readiness probes, and the Prometheus scrape.
   - name: clients
@@ -106,6 +110,69 @@ paths:
               example: |
                 # TYPE rateguard_degraded_decisions_total counter
                 rateguard_degraded_decisions_total{mode="local"} 0
+  /v1/check:
+    post:
+      tags: [decisions]
+      operationId: check
+      summary: Decide a request and consume a token
+      description: |
+        Asks whether a request your application received may proceed, and
+        takes a token from the caller's bucket if it may (ADR 0015). Forward
+        the caller's `Authorization: Bearer <API key>` header if it sent one.
+        Without one, the caller is identified by IP: the connection's address,
+        or `X-Forwarded-For` as appended by a network in `RG_TRUSTED_PROXIES`.
+
+        The answer is the status: 200 to serve the request, 429 to refuse it.
+        Durations are whole seconds, rounded up. While Redis is unreachable
+        the decision is made locally (ADR 0014) and the response looks the
+        same.
+      security:
+        - {}
+        - callerKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CheckRequest"}
+            example: {method: GET, path: /api/products}
+      responses:
+        "200":
+          description: Allowed. A token was taken.
+          headers:
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Decision"}
+              example: {allowed: true, limit: 100, remaining: 72, reset_after: 18}
+        "429":
+          description: Refused. The bucket is empty; retry after `retry_after` seconds.
+          headers:
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Decision"}
+              example: {allowed: false, limit: 100, remaining: 0, reset_after: 12, retry_after: 12}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/InvalidAPIKey"
+        "403":
+          description: The caller's client is disabled, or no enabled policy applies to the caller (ADR 0009).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+              example: {error: no rate-limit policy applies to this caller, request_id: 3f1c2a9e0b7d4c6e8a5f1b2c3d4e5f60}
+        "413":
+          description: The body is larger than 4 KiB.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /v1/clients:
     post:
       tags: [clients]
@@ -592,6 +659,13 @@ components:
       type: http
       scheme: bearer
       description: The value of `RG_ADMIN_TOKEN` (ADR 0008).
+    callerKey:
+      type: http
+      scheme: bearer
+      description: |
+        The API key of the caller a decision is about, forwarded by your
+        application. It identifies the caller; it does not authorise the
+        application to call RateGuard.
   parameters:
     ClientID:
       name: clientID
@@ -638,6 +712,17 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
+    InvalidAPIKey:
+      description: |
+        The forwarded API key is malformed, unknown or revoked. A request
+        with a bad key is never decided by IP instead.
+      headers:
+        WWW-Authenticate:
+          schema: {type: string}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+          example: {error: invalid API key, request_id: 3f1c2a9e0b7d4c6e8a5f1b2c3d4e5f60}
     InternalError:
       description: Something failed inside RateGuard. The details are in the service log under the request ID.
       content:
@@ -682,6 +767,48 @@ components:
         request_id:
           type: string
           description: Quote this when reporting a problem; it matches the service log.
+    CheckRequest:
+      type: object
+      description: The request your application received (ADR 0015).
+      required: [method, path]
+      additionalProperties: false
+      properties:
+        method:
+          type: string
+          description: Its HTTP method, in any case.
+          minLength: 1
+          maxLength: 32
+          pattern: "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+        path:
+          type: string
+          description: |
+            Its path, without the query string or fragment, which are refused
+            so that `/api/login?x` cannot escape a rule on `/api/login`.
+          minLength: 1
+          maxLength: 2048
+          pattern: "^/[^?#\\x00-\\x1f\\x7f]*$"
+    Decision:
+      type: object
+      required: [allowed, limit, remaining, reset_after]
+      properties:
+        allowed:
+          type: boolean
+        limit:
+          type: integer
+          description: The bucket's capacity under the policy or endpoint rule that applied.
+          minimum: 1
+        remaining:
+          type: integer
+          description: Whole requests still available.
+          minimum: 0
+        reset_after:
+          type: integer
+          description: Seconds until the bucket is full again, rounded up; 0 if it is full.
+          minimum: 0
+        retry_after:
+          type: integer
+          description: Sent only when refused. Seconds until a request would be allowed, rounded up.
+          minimum: 1
     RegisterClientRequest:
       type: object
       required: [name]
