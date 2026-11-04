@@ -2,6 +2,8 @@ package config_test
 
 import (
 	"log/slog"
+	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -9,14 +11,18 @@ import (
 	"github.com/Rimaz17/RateGuard/internal/config"
 )
 
-// testDatabaseURL stands in for the one variable that has no default.
-const testDatabaseURL = "postgres://rateguard:secret@localhost:5432/rateguard"
+// These stand in for the variables that have no default.
+const (
+	testDatabaseURL = "postgres://rateguard:secret@localhost:5432/rateguard"
+	testAdminToken  = "test-admin-token-0123456789abcdef"
+)
 
 // setRequired sets every variable that has no default, so that each test can
 // focus on the variables it is about.
 func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("RG_DATABASE_URL", testDatabaseURL)
+	t.Setenv("RG_ADMIN_TOKEN", testAdminToken)
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -36,6 +42,7 @@ func TestLoadDefaults(t *testing.T) {
 		ShutdownTimeout:       15 * time.Second,
 		LogLevel:              slog.LevelInfo,
 		ReadinessTimeout:      2 * time.Second,
+		AdminToken:            testAdminToken,
 		Database: config.Database{
 			URL:             testDatabaseURL,
 			MaxConns:        10,
@@ -44,7 +51,7 @@ func TestLoadDefaults(t *testing.T) {
 		},
 		Redis: config.Redis{URL: "redis://localhost:6379/0"},
 	}
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("Load() = %+v, want %+v", cfg, want)
 	}
 }
@@ -59,6 +66,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("RG_DATABASE_MAX_CONN_IDLE_TIME", "90s")
 	t.Setenv("RG_REDIS_URL", "redis://:pw@cache:6380/2")
 	t.Setenv("RG_READINESS_TIMEOUT", "750ms")
+	t.Setenv("RG_TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.7/32,,fd00::1/8 ")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -87,6 +95,14 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.ReadinessTimeout != 750*time.Millisecond {
 		t.Errorf("ReadinessTimeout = %s, want 750ms", cfg.ReadinessTimeout)
+	}
+	wantProxies := config.Prefixes{
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("192.168.1.7/32"),
+		netip.MustParsePrefix("fd00::/8"),
+	}
+	if !reflect.DeepEqual(cfg.TrustedProxies, wantProxies) {
+		t.Errorf("TrustedProxies = %v, want %v", cfg.TrustedProxies, wantProxies)
 	}
 }
 
@@ -123,6 +139,10 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"zero conn lifetime", "RG_DATABASE_MAX_CONN_LIFETIME", "0s", "RG_DATABASE_MAX_CONN_LIFETIME must be positive"},
 		{"negative conn idle time", "RG_DATABASE_MAX_CONN_IDLE_TIME", "-5m", "RG_DATABASE_MAX_CONN_IDLE_TIME must be positive"},
 		{"zero readiness timeout", "RG_READINESS_TIMEOUT", "0s", "RG_READINESS_TIMEOUT must be positive"},
+		{"empty admin token", "RG_ADMIN_TOKEN", "", "RG_ADMIN_TOKEN"},
+		{"short admin token", "RG_ADMIN_TOKEN", "too-short", "RG_ADMIN_TOKEN must be at least 32 characters, got 9"},
+		{"trusted proxy without mask", "RG_TRUSTED_PROXIES", "10.0.0.1", "parsing environment"},
+		{"trusted proxy not an address", "RG_TRUSTED_PROXIES", "lb.internal/32", "parsing environment"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,12 +161,36 @@ func TestLoadRejectsInvalid(t *testing.T) {
 }
 
 func TestLoadRequiresDatabaseURL(t *testing.T) {
+	t.Setenv("RG_ADMIN_TOKEN", testAdminToken)
 	_, err := config.Load()
 	if err == nil {
 		t.Fatal("Load() without RG_DATABASE_URL: want error, got nil")
 	}
 	if !strings.Contains(err.Error(), "RG_DATABASE_URL") {
 		t.Errorf("Load() error = %q, want it to name RG_DATABASE_URL", err)
+	}
+}
+
+func TestLoadRequiresAdminToken(t *testing.T) {
+	t.Setenv("RG_DATABASE_URL", testDatabaseURL)
+	_, err := config.Load()
+	if err == nil || !strings.Contains(err.Error(), "RG_ADMIN_TOKEN") {
+		t.Fatalf("Load() without RG_ADMIN_TOKEN: error = %v, want one naming RG_ADMIN_TOKEN", err)
+	}
+}
+
+func TestLoadAcceptsMinimumLengthAdminToken(t *testing.T) {
+	setRequired(t)
+	t.Setenv("RG_ADMIN_TOKEN", strings.Repeat("x", config.MinAdminTokenLen))
+	if _, err := config.Load(); err != nil {
+		t.Errorf("Load() with a %d-character token: %v", config.MinAdminTokenLen, err)
+	}
+}
+
+func TestLoadErrorsNeverContainSecrets(t *testing.T) {
+	t.Setenv("RG_ADMIN_TOKEN", "hunter2-short")
+	if _, err := config.Load(); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("Load() error = %v, want an error that does not quote the token", err)
 	}
 }
 

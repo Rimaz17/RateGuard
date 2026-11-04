@@ -44,3 +44,30 @@ merchant app.
 | `policy_id` | `UUID` | References `policies(id)`. `NULL` until a policy is assigned. Indexed |
 | `status` | `TEXT` | `active` (default) or `disabled` |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | Default `now()` |
+
+## `api_keys`
+
+A client's API keys. They live in their own table so that a client can hold two valid
+keys at once and rotate without downtime: issue the new key, move callers onto it,
+then revoke the old one ([ADR 0006](adr/0006-api-keys-sha256-two-active.md)). The
+limit of two active keys is enforced when a key is issued, under a row lock on the
+client.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` | Primary key, `uuidv7()` |
+| `client_id` | `UUID` | References `clients(id)`, `ON DELETE CASCADE`. Indexed |
+| `key_prefix` | `TEXT` | Public part of the key, `rg_<tag>_<16 base32 chars>`. Unique, so indexed: the authentication lookup |
+| `key_hash` | `BYTEA` | SHA-256 of the full key, exactly 32 bytes. The key itself is never stored |
+| `created_at` | `TIMESTAMPTZ` | Default `now()` |
+| `revoked_at` | `TIMESTAMPTZ` | `NULL` while active. Never earlier than `created_at` |
+
+A full key looks like `rg_cus_7hq2mfx4kd5ta3wb_<52 base32 chars>`:
+
+- `rg` marks a RateGuard key.
+- `cus` is a tag taken from the client's name, so a key is easy to attribute.
+- The next 16 characters (80 random bits) make the prefix unique.
+- The last 52 characters are the 256-bit secret.
+
+Only the part up to and including the 16 random characters is ever logged or shown
+again.

@@ -8,9 +8,10 @@ bucket shared across every RateGuard instance through Redis. Rate limiting lives
 service instead of being re-implemented in every application, and any language that can
 make an HTTP call can use it.
 
-> **Status: phase 1 (persistence).** The service runs in Docker Compose next to Postgres
-> and Redis, applies its schema migrations, and serves `GET /healthz` and `GET /readyz`.
-> Rate limiting itself is not implemented yet.
+> **Status: phase 2 (clients and API keys).** The service runs in Docker Compose next to
+> Postgres and Redis, applies its schema migrations, serves `GET /healthz` and
+> `GET /readyz`, and has an admin API to register applications and issue, rotate and
+> revoke their API keys. Rate limiting itself is not implemented yet.
 
 ## Architecture
 
@@ -48,6 +49,9 @@ make smoke   # GET /healthz and GET /readyz, expects 200 from both
 make down
 ```
 
+If your `.env` predates phase 2, add `RG_ADMIN_TOKEN` to it (see
+[configs/.env.example](configs/.env.example)); Compose refuses to start without it.
+
 `make up` binds RateGuard to `127.0.0.1:8080`, Postgres to `127.0.0.1:5433` and Redis to
 `127.0.0.1:6379`. To change the host ports, edit `.env`. A one-shot `migrate` service
 applies the schema before RateGuard starts
@@ -83,6 +87,8 @@ ones that only Docker Compose reads.
 | `RG_DATABASE_MAX_CONN_IDLE_TIME` | `5m` | Close pooled connections idle for this long |
 | `RG_REDIS_URL` | `redis://localhost:6379/0` | Redis URL; treated as a secret and never logged |
 | `RG_READINESS_TIMEOUT` | `2s` | Per-dependency timeout for the `/readyz` checks |
+| `RG_TRUSTED_PROXIES` | *(empty)* | Comma-separated CIDRs whose `X-Forwarded-For` is believed for IP identification; empty trusts none |
+| `RG_ADMIN_TOKEN` | *(required)* | Bearer token for the admin API, at least 32 characters ([ADR 0008](docs/adr/0008-admin-api-bearer-token.md)) |
 
 Every timeout must be positive. RateGuard exits at startup if any configuration value is
 invalid.
@@ -93,26 +99,63 @@ invalid.
 |---|---|---|
 | `GET /healthz` | Liveness: the process is up and serving | Available |
 | `GET /readyz` | Readiness: Postgres and Redis are reachable (200, or 503 naming the one that is not) | Available |
-| `POST /v1/clients`, `GET /v1/clients`, `POST/DELETE /v1/clients/{id}/keys` | Client and API key management | Phase 2 |
+| `POST /v1/clients` | Register an application; returns its first API key, once | Available |
+| `GET /v1/clients`, `GET /v1/clients/{id}` | List (paged) and read applications | Available |
+| `GET /v1/clients/{id}/keys` | List an application's keys, by prefix only | Available |
+| `POST /v1/clients/{id}/keys`, `DELETE /v1/clients/{id}/keys/{keyID}` | Issue a second key for rotation; revoke a key | Available |
 | `POST/PATCH/DELETE /v1/policies`, `PUT /v1/clients/{id}/policy` | Policy management | Phase 3 |
 | `POST /v1/check`, `POST /v1/peek` | Rate-limit decision | Phases 4–6 |
 | `GET /v1/analytics/usage`, `GET /metrics` | Usage analytics and Prometheus metrics | Phase 7 |
+
+The `/v1/clients` routes require `Authorization: Bearer <RG_ADMIN_TOKEN>`
+([ADR 0008](docs/adr/0008-admin-api-bearer-token.md)). Every error response is
+`{"error": "...", "request_id": "..."}`, and never carries internal detail.
 
 Every response carries an `X-Request-ID` header. An inbound `X-Request-ID` is reused if
 it is at most 64 characters of `[A-Za-z0-9._-]`; otherwise RateGuard generates a new one.
 The contract is [api/openapi.yaml](api/openapi.yaml) (OpenAPI 3.1), updated in the same
 commit as any handler.
 
+### Registering an application and rotating its key
+
+With the stack from the quickstart running (the token is the placeholder from
+`configs/.env.example`):
+
+```bash
+TOKEN=change-me-local-only-admin-token-0000
+
+# Register: the response holds the full key. It is shown once and never again.
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"name":"Customer App"}' http://127.0.0.1:8080/v1/clients
+# {"client":{"id":"<client-id>",...},"api_key":{"id":"<key-id>","prefix":"rg_cus_...","key":"rg_cus_..._...",...}}
+
+# Rotate without downtime: issue a second key, move your callers onto it...
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://127.0.0.1:8080/v1/clients/<client-id>/keys
+
+# ...then revoke the old one.
+curl -s -H "Authorization: Bearer $TOKEN" -X DELETE http://127.0.0.1:8080/v1/clients/<client-id>/keys/<key-id>
+```
+
+A key reads `rg_<tag>_<16 characters>_<52 characters>`. The tag comes from the
+application's name (`rg_cus_` for "Customer App"), so keys are easy to attribute. The
+part up to the second underscore is the public prefix: it is what logs and the admin
+API show. RateGuard stores only the SHA-256 digest of the full key
+([ADR 0006](docs/adr/0006-api-keys-sha256-two-active.md)). An application can hold two
+active keys at once, so a third is refused with `409` until one is revoked.
+
+Callers of the decision endpoints (from phase 4) will send their key as
+`Authorization: Bearer <key>`. A caller without a key is identified by its IP address.
+`X-Forwarded-For` is only believed from the proxies listed in `RG_TRUSTED_PROXIES`.
+
 ## Data model
 
-PostgreSQL holds the configuration: policies, clients and (from phase 2) their API
-keys. Redis holds only ephemeral bucket state. The schema lives in
+PostgreSQL holds the configuration: policies, clients and their API keys. Redis holds only ephemeral bucket state. The schema lives in
 [`migrations/`](migrations) as reversible, numbered pairs.
 
 | Table | Holds |
 |---|---|
 | `policies` | Named rate limits: capacity, window, refill rate, enabled flag |
 | `clients` | Registered applications, their status and assigned policy |
+| `api_keys` | Each client's keys: public prefix, SHA-256 digest, revocation time |
 
 Column-level detail and the conventions behind it are in
 [docs/data-model.md](docs/data-model.md).
@@ -166,6 +209,7 @@ check that `/readyz` turns 503 when Postgres stops and 200 when it returns.
 cmd/rateguard/            composition root: wiring and the migrate subcommand
 internal/config/          environment configuration and validation
 internal/domain/          entities and sentinel errors; standard library only
+internal/client/          client registration, API key issue, rotation and authentication
 internal/storage/postgres pgx pool, repositories and the migrator
 internal/transport/http   chi router, handlers and middleware (package httptransport)
 migrations/               numbered SQL migrations, embedded in the binary
@@ -174,7 +218,7 @@ test/integration/         testcontainers suite (build tag: integration)
 docs/                     data model and architecture decision records
 ```
 
-Later phases add `internal/limiter`, `policy`, `client` and `analytics`.
+Later phases add `internal/limiter`, `policy` and `analytics`.
 
 ## Performance
 

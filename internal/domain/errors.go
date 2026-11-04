@@ -28,4 +28,26 @@ var (
 
 	// ErrPolicyNameTaken means another policy already uses the name.
 	ErrPolicyNameTaken = fmt.Errorf("policy name already in use: %w", ErrConflict)
+
+	// ErrAPIKeyNotFound means the client has no API key with the given ID.
+	ErrAPIKeyNotFound = fmt.Errorf("API key %w", ErrNotFound)
+
+	// ErrActiveKeyLimit means the client already holds MaxActiveKeys
+	// unrevoked keys, so another cannot be issued until one is revoked.
+	ErrActiveKeyLimit = fmt.Errorf("client already has %d active API keys; revoke one first: %w", MaxActiveKeys, ErrConflict)
+
+	// ErrAPIKeyPrefixTaken means a newly generated key's prefix collided
+	// with an existing one. With 80 random bits it should never happen;
+	// the issuer retries with a fresh key if it does.
+	ErrAPIKeyPrefixTaken = fmt.Errorf("API key prefix already in use: %w", ErrConflict)
+)
+
+// Authentication errors. They deliberately say nothing about which check
+// failed: malformed, unknown, wrong and revoked keys all read the same.
+var (
+	// ErrInvalidAPIKey means the presented key does not authenticate.
+	ErrInvalidAPIKey = errors.New("invalid API key")
+
+	// ErrClientDisabled means the key is valid but its client is disabled.
+	ErrClientDisabled = errors.New("client is disabled")
 )

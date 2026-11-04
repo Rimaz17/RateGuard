@@ -17,6 +17,9 @@ func TestSpecificErrorsWrapTheirCategory(t *testing.T) {
 		{domain.ErrClientNotFound, domain.ErrNotFound, "client not found"},
 		{domain.ErrPolicyNotFound, domain.ErrNotFound, "policy not found"},
 		{domain.ErrPolicyNameTaken, domain.ErrConflict, "policy name already in use: conflict"},
+		{domain.ErrAPIKeyNotFound, domain.ErrNotFound, "API key not found"},
+		{domain.ErrActiveKeyLimit, domain.ErrConflict, "client already has 2 active API keys; revoke one first: conflict"},
+		{domain.ErrAPIKeyPrefixTaken, domain.ErrConflict, "API key prefix already in use: conflict"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
@@ -40,5 +43,10 @@ func TestCategoriesAreDistinct(t *testing.T) {
 	}
 	if errors.Is(domain.ErrPolicyNameTaken, domain.ErrNotFound) {
 		t.Error("ErrPolicyNameTaken must not match ErrNotFound")
+	}
+	for _, err := range []error{domain.ErrInvalidAPIKey, domain.ErrClientDisabled} {
+		if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrConflict) {
+			t.Errorf("%v must not match a CRUD category", err)
+		}
 	}
 }
