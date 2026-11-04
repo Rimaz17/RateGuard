@@ -4,7 +4,6 @@
 package httptransport
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -12,8 +11,8 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// Deps is everything the router needs. main builds it; nothing here
-// constructs a dependency of its own.
+// Deps is everything the router needs. main builds it; the router builds
+// nothing with I/O of its own.
 type Deps struct {
 	Logger *slog.Logger
 
@@ -22,6 +21,18 @@ type Deps struct {
 
 	// ReadinessTimeout bounds the whole /readyz probe.
 	ReadinessTimeout time.Duration
+
+	// AdminToken guards every admin route (ADR 0008). Empty locks them
+	// all: no presented token can match it.
+	AdminToken string
+
+	// Clients serves the /v1/clients admin routes. When nil, they are not
+	// mounted, which suits tests that exercise only the probes.
+	Clients ClientRegistry
+
+	// Keys serves /v1/clients/{clientID}/keys. It is mounted only
+	// alongside Clients.
+	Keys KeyManager
 }
 
 // NewRouter builds the HTTP handler for the whole service.
@@ -33,13 +44,21 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(d.Logger, d.Readiness, d.ReadinessTimeout))
 
-	return r
-}
+	if d.Clients != nil {
+		ch := clientHandlers{logger: d.Logger, registry: d.Clients, validate: newValidator()}
+		r.Route("/v1/clients", func(r chi.Router) {
+			r.Use(AdminAuth(d.AdminToken))
+			r.Post("/", ch.register)
+			r.Get("/", ch.list)
+			r.Get("/{clientID}", ch.get)
+			if d.Keys != nil {
+				kh := keyHandlers{logger: d.Logger, keys: d.Keys}
+				r.Get("/{clientID}/keys", kh.list)
+				r.Post("/{clientID}/keys", kh.issue)
+				r.Delete("/{clientID}/keys/{keyID}", kh.revoke)
+			}
+		})
+	}
 
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	// The status line is already sent, so an encoding failure (almost always
-	// the client hanging up) has no better recovery than dropping the body.
-	_ = json.NewEncoder(w).Encode(body)
+	return r
 }

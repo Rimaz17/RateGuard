@@ -33,6 +33,30 @@ func (r *Clients) Create(ctx context.Context, name string) (domain.Client, error
 	return c, nil
 }
 
+// CreateWithKey registers a client together with its first API key, in one
+// transaction: there is never a client without a key to call with, nor a
+// key without its client. A prefix collision returns
+// domain.ErrAPIKeyPrefixTaken and leaves nothing behind.
+func (r *Clients) CreateWithKey(ctx context.Context, name string, key domain.NewAPIKey) (domain.Client, domain.APIKey, error) {
+	var (
+		c domain.Client
+		k domain.APIKey
+	)
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		c, err = scanClient(tx.QueryRow(ctx, `INSERT INTO clients (name) VALUES ($1) RETURNING `+clientColumns, name))
+		if err != nil {
+			return fmt.Errorf("inserting client: %w", err)
+		}
+		k, err = insertKey(ctx, tx, c.ID, key)
+		return err
+	})
+	if err != nil {
+		return domain.Client{}, domain.APIKey{}, fmt.Errorf("registering client: %w", err)
+	}
+	return c, k, nil
+}
+
 // Get returns the client with the given ID, or domain.ErrClientNotFound.
 func (r *Clients) Get(ctx context.Context, id string) (domain.Client, error) {
 	if !domain.IsID(id) {

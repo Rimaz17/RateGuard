@@ -96,8 +96,5 @@ func recoverPanic(logger *slog.Logger, w http.ResponseWriter, r *http.Request) {
 		slog.Any("panic", rec),
 		slog.String("stack", string(debug.Stack())),
 	)
-	writeJSON(w, http.StatusInternalServerError, map[string]string{
-		"error":      "internal server error",
-		"request_id": id,
-	})
+	writeError(w, r, http.StatusInternalServerError, "internal server error")
 }

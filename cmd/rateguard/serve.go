@@ -12,6 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Rimaz17/RateGuard/internal/client"
 	"github.com/Rimaz17/RateGuard/internal/config"
 	"github.com/Rimaz17/RateGuard/internal/storage/postgres"
 	httptransport "github.com/Rimaz17/RateGuard/internal/transport/http"
@@ -56,6 +57,8 @@ func serve() error {
 		}
 	}()
 
+	clients := client.New(postgres.NewClients(pool), postgres.NewAPIKeys(pool))
+
 	router := httptransport.NewRouter(httptransport.Deps{
 		Logger: logger,
 		Readiness: []httptransport.ReadinessCheck{
@@ -63,6 +66,9 @@ func serve() error {
 			{Name: "redis", Check: func(ctx context.Context) error { return rdb.Ping(ctx).Err() }},
 		},
 		ReadinessTimeout: cfg.ReadinessTimeout,
+		AdminToken:       cfg.AdminToken.Value(),
+		Clients:          clients,
+		Keys:             clients,
 	})
 
 	srv := &http.Server{
