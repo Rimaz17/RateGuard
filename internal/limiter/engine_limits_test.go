@@ -125,6 +125,19 @@ func TestDurationsSaturateInsteadOfOverflowing(t *testing.T) {
 	}
 }
 
+// TestSaturatedDurationsSurviveABackwardsClock adds the lag of a clock
+// that went back to durations that are already at the maximum: the sum
+// must stay at the maximum, not wrap negative.
+func TestSaturatedDurationsSurviveABackwardsClock(t *testing.T) {
+	l := limiter.Limit{Capacity: 1, RefillRate: 1e-300}
+	b, _ := limiter.Take(limiter.Bucket{}, l, t0)
+
+	_, d := limiter.Take(b, l, t0.Add(-time.Hour))
+	if d.Allowed || d.RetryAfter != math.MaxInt64 || d.ResetAfter != math.MaxInt64 {
+		t.Errorf("an hour behind at a negligible rate = %+v, want both durations saturated", d)
+	}
+}
+
 func TestCorruptStoredStateIsTreatedAsEmpty(t *testing.T) {
 	l := limiter.Limit{Capacity: 5, RefillRate: 1}
 	for _, tokens := range []float64{math.NaN(), -1, math.Inf(-1)} {
