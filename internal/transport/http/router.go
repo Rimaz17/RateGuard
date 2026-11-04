@@ -22,6 +22,10 @@ type Deps struct {
 	// ReadinessTimeout bounds the whole /readyz probe.
 	ReadinessTimeout time.Duration
 
+	// Metrics serves GET /metrics, the Prometheus scrape. When nil, the
+	// route is not mounted.
+	Metrics http.Handler
+
 	// AdminToken guards every admin route (ADR 0008). Empty locks them
 	// all: no presented token can match it.
 	AdminToken string
@@ -55,6 +59,11 @@ func NewRouter(d Deps) http.Handler {
 
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(d.Logger, d.Readiness, d.ReadinessTimeout))
+	if d.Metrics != nil {
+		// Unauthenticated like the probes: its labels never name a client
+		// or a key (ADR 0014).
+		r.Method(http.MethodGet, "/metrics", d.Metrics)
+	}
 
 	if d.Clients != nil {
 		ch := clientHandlers{logger: d.Logger, registry: d.Clients, validate: newValidator()}

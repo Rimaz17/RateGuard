@@ -21,7 +21,7 @@ security:
   - adminToken: []
 tags:
   - name: health
-    description: Liveness and readiness probes.
+    description: Liveness and readiness probes, and the Prometheus scrape.
   - name: clients
     description: Register client applications and manage their API keys.
   - name: policies
@@ -84,6 +84,28 @@ paths:
               example:
                 status: not ready
                 checks: {postgres: unavailable, redis: ok}
+  /metrics:
+    get:
+      tags: [health]
+      operationId: getMetrics
+      summary: Prometheus scrape
+      description: |
+        Metrics in the Prometheus text format. Among them,
+        `rateguard_degraded_decisions_total` counts decisions made without
+        Redis, `rateguard_redis_errors_total` counts failed Redis calls, and
+        `rateguard_redis_breaker_state` is 0, 1 or 2 for a closed, half-open
+        or open circuit breaker (ADR 0014). No label names a client or a key.
+      security: [] # Scraped like the probes; it carries only aggregates.
+      responses:
+        "200":
+          description: The current metrics.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # TYPE rateguard_degraded_decisions_total counter
+                rateguard_degraded_decisions_total{mode="local"} 0
   /v1/clients:
     post:
       tags: [clients]
