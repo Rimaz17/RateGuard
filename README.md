@@ -153,7 +153,7 @@ PostgreSQL holds the configuration: policies and their endpoint rules, clients a
 
 | Table | Holds |
 |---|---|
-| `policies` | Named rate limits: capacity, window, refill rate, enabled flag |
+| `policies` | Named rate limits: capacity, window, refill rate, enabled flag, and which one is the default |
 | `endpoint_rules` | A policy's own limits for particular methods and path patterns |
 | `clients` | Registered applications, their status and assigned policy |
 | `api_keys` | Each client's keys: public prefix, SHA-256 digest, revocation time |

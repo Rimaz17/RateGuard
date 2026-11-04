@@ -30,7 +30,11 @@ A named rate limit, such as Free, Premium or Enterprise. Policies are disabled
 | `window_seconds` | `INTEGER` | Period the capacity is quoted over. Greater than 0 |
 | `refill_rate` | `DOUBLE PRECISION` | Tokens returned per second. Finite and greater than 0 |
 | `enabled` | `BOOLEAN` | Default `true` |
+| `is_default` | `BOOLEAN` | Default `false`. At most one row is `true`, enforced by the partial unique index `policies_one_default_idx` |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | Default `now()` |
+
+The default policy applies to callers with no enabled policy of their own, including
+callers identified only by IP ([ADR 0009](adr/0009-policy-resolution-and-default-policy.md)).
 
 ## `endpoint_rules`
 
