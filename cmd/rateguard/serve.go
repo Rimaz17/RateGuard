@@ -14,6 +14,7 @@ import (
 
 	"github.com/Rimaz17/RateGuard/internal/client"
 	"github.com/Rimaz17/RateGuard/internal/config"
+	"github.com/Rimaz17/RateGuard/internal/policy"
 	"github.com/Rimaz17/RateGuard/internal/storage/postgres"
 	httptransport "github.com/Rimaz17/RateGuard/internal/transport/http"
 )
@@ -57,7 +58,29 @@ func serve() error {
 		}
 	}()
 
-	clients := client.New(postgres.NewClients(pool), postgres.NewAPIKeys(pool))
+	clientStore := postgres.NewClients(pool)
+	policyStore := postgres.NewPolicies(pool)
+	clients := client.New(clientStore, postgres.NewAPIKeys(pool))
+
+	// The resolver caches what decisions need (ADR 0005). Writes through
+	// the policy service drop changes from it directly and publish them
+	// for the other instances; the subscriber applies theirs here.
+	resolver := policy.NewResolver(clientStore, policyStore)
+	policies := policy.New(policyStore, postgres.NewEndpointRules(pool), clientStore,
+		policy.NewBroadcaster(rdb, resolver, logger))
+	// The subscriber stops on SIGINT/SIGTERM like everything else, and on
+	// any early return; the deferred wait runs before the Redis client
+	// closes, so it never outlives the connection it uses.
+	subscriberCtx, stopSubscriber := context.WithCancel(ctx)
+	subscriberDone := make(chan struct{})
+	go func() {
+		defer close(subscriberDone)
+		policy.NewSubscriber(rdb, resolver, logger).Run(subscriberCtx)
+	}()
+	defer func() {
+		stopSubscriber()
+		<-subscriberDone
+	}()
 
 	router := httptransport.NewRouter(httptransport.Deps{
 		Logger: logger,
@@ -69,6 +92,9 @@ func serve() error {
 		AdminToken:       cfg.AdminToken.Value(),
 		Clients:          clients,
 		Keys:             clients,
+		Policies:         policies,
+		Rules:            policies,
+		Assigner:         policies,
 	})
 
 	srv := &http.Server{
