@@ -70,18 +70,9 @@ func serve() error {
 	clients := client.New(clientStore, postgres.NewAPIKeys(pool), broadcaster)
 	policies := policy.New(policyStore, postgres.NewEndpointRules(pool), clientStore, broadcaster)
 	// The subscriber stops on SIGINT/SIGTERM like everything else, and on
-	// any early return; the deferred wait runs before the Redis client
+	// any early return; the deferred stop runs before the Redis client
 	// closes, so it never outlives the connection it uses.
-	subscriberCtx, stopSubscriber := context.WithCancel(ctx)
-	subscriberDone := make(chan struct{})
-	go func() {
-		defer close(subscriberDone)
-		policy.NewSubscriber(rdb, resolver, logger).Run(subscriberCtx)
-	}()
-	defer func() {
-		stopSubscriber()
-		<-subscriberDone
-	}()
+	defer background(ctx, policy.NewSubscriber(rdb, resolver, logger).Run)()
 
 	router := httptransport.NewRouter(httptransport.Deps{
 		Logger: logger,
@@ -133,6 +124,22 @@ func serve() error {
 	}
 	logger.Info("stopped")
 	return nil
+}
+
+// background runs loop on its own goroutine until ctx ends or the returned
+// stop function is called. stop cancels the loop and waits for it to
+// return, so a deferred stop guarantees the goroutine has ended.
+func background(ctx context.Context, loop func(context.Context)) (stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		loop(ctx)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // newRedisClient builds a client from a redis:// or rediss:// URL without

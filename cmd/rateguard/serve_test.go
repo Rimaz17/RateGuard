@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestNewRedisClient(t *testing.T) {
@@ -50,6 +53,35 @@ func TestNewRedisClientInvalidURLDoesNotLeakPassword(t *testing.T) {
 			t.Errorf("newRedisClient error leaks the password: %q", err)
 		}
 	}
+}
+
+func TestBackgroundStopWaitsForTheLoop(t *testing.T) {
+	var ended atomic.Bool
+	stop := background(t.Context(), func(ctx context.Context) {
+		<-ctx.Done()
+		time.Sleep(20 * time.Millisecond) // cleanup after cancellation
+		ended.Store(true)
+	})
+	stop()
+	if !ended.Load() {
+		t.Error("stop returned before the loop had finished")
+	}
+}
+
+func TestBackgroundEndsWithItsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	returned := make(chan struct{})
+	stop := background(ctx, func(ctx context.Context) {
+		<-ctx.Done()
+		close(returned)
+	})
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("the loop did not end when its parent context did")
+	}
+	stop() // still safe once the loop has ended
 }
 
 func TestRedisLoggerWritesStructuredWarnings(t *testing.T) {
