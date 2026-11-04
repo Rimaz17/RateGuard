@@ -148,12 +148,13 @@ Callers of the decision endpoints (from phase 4) will send their key as
 
 ## Data model
 
-PostgreSQL holds the configuration: policies, clients and their API keys. Redis holds only ephemeral bucket state. The schema lives in
+PostgreSQL holds the configuration: policies and their endpoint rules, clients and their API keys. Redis holds only ephemeral bucket state. The schema lives in
 [`migrations/`](migrations) as reversible, numbered pairs.
 
 | Table | Holds |
 |---|---|
 | `policies` | Named rate limits: capacity, window, refill rate, enabled flag |
+| `endpoint_rules` | A policy's own limits for particular methods and path patterns |
 | `clients` | Registered applications, their status and assigned policy |
 | `api_keys` | Each client's keys: public prefix, SHA-256 digest, revocation time |
 
