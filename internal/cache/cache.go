@@ -1,4 +1,7 @@
-package policy
+// Package cache is the in-process cache that keeps Postgres off the decision
+// hot path: a TTL cache in front of a loader, used for resolved policies
+// (ADR 0005) and for API keys (ADR 0012).
+package cache
 
 import (
 	"context"
@@ -8,49 +11,61 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// cache is a TTL cache in front of a loader, with the three properties ADR
-// 0005 asks of the policy cache:
+// Loader reads the value for key from the source of truth.
+type Loader[V any] func(ctx context.Context, key string) (V, error)
+
+// Cache is a TTL cache in front of a Loader, with the three properties
+// ADR 0005 asks of a hot-path cache:
 //
-//   - Entries expire after ttl, as a safety net for a missed invalidation.
+//   - Entries expire after the TTL, as a safety net for a missed
+//     invalidation.
 //   - Concurrent misses for one key share a single load (singleflight), so
 //     a cold cache under load cannot stampede the database.
 //   - An invalidation wins over a load already in flight. Every
-//     invalidation bumps epoch; a load stores its result only if no
+//     invalidation bumps an epoch; a load stores its result only if no
 //     invalidation happened since it started, so a value read just before
 //     a change can never be cached after it.
 //
-// Errors are never cached: the next request retries the load.
-type cache[V any] struct {
+// Errors are never cached: the next request retries the load. A Cache is
+// safe for concurrent use.
+type Cache[V any] struct {
 	ttl         time.Duration
 	loadTimeout time.Duration
 	now         func() time.Time
-	load        func(ctx context.Context, key string) (V, error)
+	load        Loader[V]
 
 	mu    sync.Mutex
-	items map[string]cacheItem[V]
+	items map[string]item[V]
 	epoch uint64
 
 	flights singleflight.Group
 }
 
-type cacheItem[V any] struct {
+type item[V any] struct {
 	value   V
 	expires time.Time
 }
 
-func newCache[V any](ttl, loadTimeout time.Duration, now func() time.Time, load func(context.Context, string) (V, error)) *cache[V] {
-	return &cache[V]{
+// New returns an empty Cache whose entries live for ttl and whose loads are
+// each bounded by loadTimeout. now is the clock that expires entries, or
+// time.Now when nil; it never touches bucket arithmetic, which runs on
+// Redis's clock (ADR 0002).
+func New[V any](ttl, loadTimeout time.Duration, now func() time.Time, load Loader[V]) *Cache[V] {
+	if now == nil {
+		now = time.Now
+	}
+	return &Cache[V]{
 		ttl:         ttl,
 		loadTimeout: loadTimeout,
 		now:         now,
 		load:        load,
-		items:       make(map[string]cacheItem[V]),
+		items:       make(map[string]item[V]),
 	}
 }
 
-// get returns the cached value for key, loading it on a miss. A caller whose
+// Get returns the cached value for key, loading it on a miss. A caller whose
 // context ends stops waiting, but the shared load carries on for the others.
-func (c *cache[V]) get(ctx context.Context, key string) (V, error) {
+func (c *Cache[V]) Get(ctx context.Context, key string) (V, error) {
 	if v, ok := c.lookup(key); ok {
 		return v, nil
 	}
@@ -70,7 +85,7 @@ func (c *cache[V]) get(ctx context.Context, key string) (V, error) {
 	}
 }
 
-func (c *cache[V]) lookup(key string) (V, bool) {
+func (c *Cache[V]) lookup(key string) (V, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	it, ok := c.items[key]
@@ -88,7 +103,7 @@ func (c *cache[V]) lookup(key string) (V, bool) {
 
 // fill loads key and caches the result unless an invalidation happened
 // while it was loading.
-func (c *cache[V]) fill(ctx context.Context, key string) (V, error) {
+func (c *Cache[V]) fill(ctx context.Context, key string) (V, error) {
 	// A caller can miss in lookup just before another flight stores its
 	// result, and reach DoChan just after that flight has ended. Checking
 	// again here serves it the stored value instead of loading twice.
@@ -113,14 +128,14 @@ func (c *cache[V]) fill(ctx context.Context, key string) (V, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.epoch == start {
-		c.items[key] = cacheItem[V]{value: v, expires: c.now().Add(c.ttl)}
+		c.items[key] = item[V]{value: v, expires: c.now().Add(c.ttl)}
 	}
 	return v, nil
 }
 
-// invalidate drops key. Callers that arrive afterwards start a fresh load
+// Invalidate drops key. Callers that arrive afterwards start a fresh load
 // rather than joining one that began before the change.
-func (c *cache[V]) invalidate(key string) {
+func (c *Cache[V]) Invalidate(key string) {
 	c.mu.Lock()
 	delete(c.items, key)
 	c.epoch++
@@ -128,9 +143,9 @@ func (c *cache[V]) invalidate(key string) {
 	c.flights.Forget(key)
 }
 
-// flush drops every entry, for when invalidations may have been missed.
+// Flush drops every entry, for when invalidations may have been missed.
 // Loads already in flight finish but do not store their results.
-func (c *cache[V]) flush() {
+func (c *Cache[V]) Flush() {
 	c.mu.Lock()
 	clear(c.items)
 	c.epoch++

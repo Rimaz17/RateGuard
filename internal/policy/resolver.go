@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Rimaz17/RateGuard/internal/cache"
 	"github.com/Rimaz17/RateGuard/internal/domain"
 )
 
@@ -44,9 +45,9 @@ type Catalog interface {
 //
 // A Resolver is safe for concurrent use.
 type Resolver struct {
-	clients  *cache[string]
-	policies *cache[*compiledPolicy]
-	defaults *cache[string]
+	clients  *cache.Cache[string]
+	policies *cache.Cache[*compiledPolicy]
+	defaults *cache.Cache[string]
 }
 
 // Option configures a Resolver.
@@ -76,15 +77,15 @@ func NewResolver(clients Assignments, policies Catalog, opts ...Option) *Resolve
 		opt(&o)
 	}
 	return &Resolver{
-		clients: newCache(o.ttl, defaultLoadTimeout, o.now, clients.PolicyID),
-		policies: newCache(o.ttl, defaultLoadTimeout, o.now, func(ctx context.Context, id string) (*compiledPolicy, error) {
+		clients: cache.New(o.ttl, defaultLoadTimeout, o.now, clients.PolicyID),
+		policies: cache.New(o.ttl, defaultLoadTimeout, o.now, func(ctx context.Context, id string) (*compiledPolicy, error) {
 			p, rules, err := policies.GetWithRules(ctx, id)
 			if err != nil {
 				return nil, err
 			}
 			return compile(p, rules)
 		}),
-		defaults: newCache(o.ttl, defaultLoadTimeout, o.now, func(ctx context.Context, _ string) (string, error) {
+		defaults: cache.New(o.ttl, defaultLoadTimeout, o.now, func(ctx context.Context, _ string) (string, error) {
 			return policies.DefaultID(ctx)
 		}),
 	}
@@ -104,7 +105,7 @@ func NewResolver(clients Assignments, policies Catalog, opts ...Option) *Resolve
 func (r *Resolver) Resolve(ctx context.Context, id domain.Identity, method, requestPath string) (domain.ResolvedLimit, error) {
 	switch id.Kind {
 	case domain.IdentityAPIKey:
-		policyID, err := r.clients.get(ctx, id.ClientID)
+		policyID, err := r.clients.Get(ctx, id.ClientID)
 		if err != nil {
 			return domain.ResolvedLimit{}, fmt.Errorf("resolving policy of client %s: %w", id.ClientID, err)
 		}
@@ -122,7 +123,7 @@ func (r *Resolver) Resolve(ctx context.Context, id domain.Identity, method, requ
 		return domain.ResolvedLimit{}, fmt.Errorf("resolving policy: unknown identity kind %q", id.Kind)
 	}
 
-	defaultID, err := r.defaults.get(ctx, defaultKey)
+	defaultID, err := r.defaults.Get(ctx, defaultKey)
 	if err != nil {
 		return domain.ResolvedLimit{}, fmt.Errorf("resolving default policy: %w", err)
 	}
@@ -140,7 +141,7 @@ func (r *Resolver) Resolve(ctx context.Context, id domain.Identity, method, requ
 }
 
 func (r *Resolver) policy(ctx context.Context, id string) (*compiledPolicy, error) {
-	cp, err := r.policies.get(ctx, id)
+	cp, err := r.policies.Get(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("loading policy %s: %w", id, err)
 	}
@@ -151,17 +152,17 @@ func (r *Resolver) policy(ctx context.Context, id string) (*compiledPolicy, erro
 func (r *Resolver) Invalidate(c Change) {
 	switch c.Kind {
 	case KindClient:
-		r.clients.invalidate(c.ID)
+		r.clients.Invalidate(c.ID)
 	case KindPolicy:
-		r.policies.invalidate(c.ID)
-		r.defaults.invalidate(defaultKey)
+		r.policies.Invalidate(c.ID)
+		r.defaults.Invalidate(defaultKey)
 	}
 }
 
 // Flush drops everything. It is for when invalidations may have been missed,
 // such as after the pub/sub connection drops and reconnects.
 func (r *Resolver) Flush() {
-	r.clients.flush()
-	r.policies.flush()
-	r.defaults.flush()
+	r.clients.Flush()
+	r.policies.Flush()
+	r.defaults.Flush()
 }
