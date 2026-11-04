@@ -97,6 +97,93 @@ func (r *Clients) List(ctx context.Context, page domain.Page) ([]domain.Client, 
 	return clients, nil
 }
 
+// AssignPolicy sets the client's policy and returns the updated client. An
+// empty policyID removes the assignment. A missing client is
+// domain.ErrClientNotFound, a missing policy domain.ErrPolicyNotFound, and
+// a disabled one domain.ErrPolicyDisabled.
+func (r *Clients) AssignPolicy(ctx context.Context, clientID, policyID string) (domain.Client, error) {
+	if !domain.IsID(clientID) {
+		return domain.Client{}, domain.ErrClientNotFound
+	}
+	if policyID != "" && !domain.IsID(policyID) {
+		return domain.Client{}, domain.ErrPolicyNotFound
+	}
+	var c domain.Client
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		// The client is checked first so that a request naming neither a
+		// real client nor a real policy reports the client, which is the
+		// resource in its URL.
+		var locked string
+		err := tx.QueryRow(ctx, `SELECT id FROM clients WHERE id = $1 FOR NO KEY UPDATE`, clientID).Scan(&locked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrClientNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("locking client: %w", err)
+		}
+
+		var policyParam *string
+		if policyID != "" {
+			if err := requireEnabledPolicy(ctx, tx, policyID); err != nil {
+				return err
+			}
+			policyParam = &policyID
+		}
+
+		c, err = scanClient(tx.QueryRow(ctx, `
+			UPDATE clients SET policy_id = $2, updated_at = now()
+			WHERE id = $1
+			RETURNING `+clientColumns,
+			clientID, policyParam))
+		return err
+	})
+	switch {
+	case errors.Is(err, domain.ErrClientNotFound), errors.Is(err, domain.ErrPolicyNotFound), errors.Is(err, domain.ErrPolicyDisabled):
+		return domain.Client{}, err
+	case err != nil:
+		return domain.Client{}, fmt.Errorf("assigning policy: %w", err)
+	}
+	return c, nil
+}
+
+// requireEnabledPolicy checks that the policy exists and is enabled, and
+// holds a share lock on it until tx ends, so it cannot be disabled between
+// this check and the assignment that relies on it.
+func requireEnabledPolicy(ctx context.Context, tx pgx.Tx, policyID string) error {
+	var enabled bool
+	err := tx.QueryRow(ctx, `SELECT enabled FROM policies WHERE id = $1 FOR SHARE`, policyID).Scan(&enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrPolicyNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("checking policy: %w", err)
+	}
+	if !enabled {
+		return domain.ErrPolicyDisabled
+	}
+	return nil
+}
+
+// PolicyID returns the ID of the client's assigned policy, or "" when it
+// has none. A missing client is domain.ErrClientNotFound.
+func (r *Clients) PolicyID(ctx context.Context, clientID string) (string, error) {
+	if !domain.IsID(clientID) {
+		return "", domain.ErrClientNotFound
+	}
+	var policyID *string
+	err := r.pool.QueryRow(ctx, `SELECT policy_id FROM clients WHERE id = $1`, clientID).Scan(&policyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.ErrClientNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("selecting client policy: %w", err)
+	}
+	if policyID == nil {
+		return "", nil
+	}
+	return *policyID, nil
+}
+
 func scanClient(row pgx.Row) (domain.Client, error) {
 	var (
 		c        domain.Client

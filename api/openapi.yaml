@@ -11,7 +11,8 @@ info:
     of at most 64 characters from `[A-Za-z0-9._-]` is reused; anything else is
     replaced with a generated ID.
 
-    Admin routes (`/v1/clients`) require `Authorization: Bearer <RG_ADMIN_TOKEN>`.
+    Admin routes (`/v1/clients`, `/v1/policies`) require
+    `Authorization: Bearer <RG_ADMIN_TOKEN>`.
     Every error has the same body: `{"error": "...", "request_id": "..."}`.
 servers:
   - url: http://127.0.0.1:8080
@@ -23,6 +24,13 @@ tags:
     description: Liveness and readiness probes.
   - name: clients
     description: Register client applications and manage their API keys.
+  - name: policies
+    description: |
+      Rate-limit policies such as Free, Premium and Enterprise. A caller with
+      an API key uses its client's policy; anyone else, and a client whose
+      policy is disabled or unassigned, uses the default policy. With neither,
+      the caller has no policy and is refused, never allowed unlimited
+      (ADR 0009). Changes reach every RateGuard instance within milliseconds.
 paths:
   /healthz:
     get:
@@ -171,6 +179,52 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/clients/{clientID}/policy:
+    parameters:
+      - $ref: "#/components/parameters/ClientID"
+    put:
+      tags: [clients, policies]
+      operationId: assignClientPolicy
+      summary: Assign a policy to a client
+      description: |
+        Puts the client on a policy, or with `"policy_id": null` takes it off
+        any policy so it falls back to the default. The field is required, so
+        an empty body cannot remove a plan by accident. A disabled policy
+        cannot be assigned. The change reaches every RateGuard instance within
+        milliseconds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignPolicyRequest"
+      responses:
+        "200":
+          description: The client, with its new policy.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such client, or no such policy. The message says which.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /v1/clients/{clientID}/keys:
     parameters:
       - $ref: "#/components/parameters/ClientID"
@@ -256,6 +310,260 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/policies:
+    post:
+      tags: [policies]
+      operationId: createPolicy
+      summary: Create a policy
+      description: |
+        `refill_rate` defaults to `capacity / window_seconds`. Set it lower to
+        allow bursts larger than the sustained rate. With `default: true` the
+        new policy becomes the default, taking the flag from the previous one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePolicyRequest"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              description: The new policy's URL.
+              schema: {type: string}
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [policies]
+      operationId: listPolicies
+      summary: List policies
+      description: Policies in creation order, one page at a time, disabled ones included.
+      parameters:
+        - name: limit
+          in: query
+          description: Page size.
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: after
+          in: query
+          description: The `next_after` value from the previous page.
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: One page of policies.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/policies/{policyID}:
+    parameters:
+      - $ref: "#/components/parameters/PolicyID"
+    get:
+      tags: [policies]
+      operationId: getPolicy
+      summary: Get a policy
+      responses:
+        "200":
+          description: The policy.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [policies]
+      operationId: updatePolicy
+      summary: Update a policy
+      description: |
+        Changes only the fields given. Changing `capacity` or `window_seconds`
+        without `refill_rate` recomputes the refill rate as
+        `capacity / window_seconds`. `default: true` moves the default flag
+        here; `default: false` clears it. `enabled: true` re-enables a
+        disabled policy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePolicyRequest"
+      responses:
+        "200":
+          description: The updated policy.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [policies]
+      operationId: disablePolicy
+      summary: Disable a policy
+      description: |
+        Policies are disabled, never deleted, so no client is left pointing at
+        a missing policy. Clients on a disabled policy fall back to the
+        default policy. Disabling a disabled policy succeeds. Re-enable with
+        `PATCH {"enabled": true}`.
+      responses:
+        "204":
+          description: Disabled.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/policies/{policyID}/rules:
+    parameters:
+      - $ref: "#/components/parameters/PolicyID"
+    get:
+      tags: [policies]
+      operationId: listEndpointRules
+      summary: List a policy's endpoint rules
+      description: The policy's rules in creation order. Precedence does not depend on this order.
+      responses:
+        "200":
+          description: The policy's rules.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndpointRuleList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [policies]
+      operationId: createEndpointRule
+      summary: Add an endpoint rule
+      description: |
+        Gives requests matching `method` and `path_pattern` their own limit
+        within the policy, in place of the policy's own. Every path a rule
+        matches shares one bucket per caller.
+
+        **Patterns.** A pattern starts with `/`. A segment is a literal
+        (matched exactly, case-sensitively), `*` (exactly one segment) or,
+        as the last segment only, `**` (zero or more segments). Request paths
+        are cleaned before matching, so `/api/login/` and `/api//login` both
+        match `/api/login`.
+
+        **Precedence.** When several rules match, the most specific wins:
+        patterns are compared segment by segment from the left, and at the
+        first difference a literal beats `*`, which beats `**`. Between
+        equally specific patterns, a rule for the request's method beats one
+        for `*`. See ADR 0010.
+
+        A policy holds at most 100 rules.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEndpointRuleRequest"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndpointRule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/policies/{policyID}/rules/{ruleID}:
+    parameters:
+      - $ref: "#/components/parameters/PolicyID"
+      - name: ruleID
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    delete:
+      tags: [policies]
+      operationId: deleteEndpointRule
+      summary: Delete an endpoint rule
+      description: Requests it matched fall under the policy's own limit, or under the next most specific rule. A rule of another policy is treated as not found.
+      responses:
+        "204":
+          description: Deleted.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
   securitySchemes:
     adminToken:
@@ -265,6 +573,11 @@ components:
   parameters:
     ClientID:
       name: clientID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    PolicyID:
+      name: policyID
       in: path
       required: true
       schema: {type: string, format: uuid}
@@ -423,3 +736,119 @@ components:
       properties:
         client: {$ref: "#/components/schemas/Client"}
         api_key: {$ref: "#/components/schemas/IssuedAPIKey"}
+    Policy:
+      type: object
+      required: [id, name, capacity, window_seconds, refill_rate, enabled, default, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, example: Free}
+        capacity:
+          type: integer
+          description: Bucket size, the largest burst. With `window_seconds`, the advertised limit ("100 per 60 seconds").
+          example: 100
+        window_seconds: {type: integer, example: 60}
+        refill_rate:
+          type: number
+          description: Tokens returned to the bucket per second.
+          example: 1.6666666666666667
+        enabled:
+          type: boolean
+          description: A disabled policy applies to nobody; its clients fall back to the default.
+        default:
+          type: boolean
+          description: Whether this is the default policy. At most one policy is.
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    PolicyList:
+      type: object
+      required: [policies]
+      properties:
+        policies:
+          type: array
+          items: {$ref: "#/components/schemas/Policy"}
+        next_after:
+          type: string
+          format: uuid
+          description: Present when the page is full. Pass it as `after` for the next page.
+    CreatePolicyRequest:
+      type: object
+      required: [name, capacity, window_seconds]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Unique. Surrounding whitespace is trimmed.
+          minLength: 1
+          maxLength: 100
+          example: Free
+        capacity: {type: integer, minimum: 1, maximum: 1000000000, example: 100}
+        window_seconds: {type: integer, minimum: 1, maximum: 86400, example: 60}
+        refill_rate:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1000000000
+          description: Defaults to `capacity / window_seconds`.
+        enabled: {type: boolean, default: true}
+        default: {type: boolean, default: false}
+    UpdatePolicyRequest:
+      type: object
+      description: At least one field must be set.
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100}
+        capacity: {type: integer, minimum: 1, maximum: 1000000000}
+        window_seconds: {type: integer, minimum: 1, maximum: 86400}
+        refill_rate: {type: number, exclusiveMinimum: 0, maximum: 1000000000}
+        enabled: {type: boolean}
+        default: {type: boolean}
+    AssignPolicyRequest:
+      type: object
+      required: [policy_id]
+      additionalProperties: false
+      properties:
+        policy_id:
+          type: [string, "null"]
+          format: uuid
+          description: The policy to assign, or null to remove the client's policy.
+    EndpointRule:
+      type: object
+      required: [id, policy_id, method, path_pattern, capacity, window_seconds, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        policy_id: {type: string, format: uuid}
+        method:
+          type: string
+          description: An upper-case HTTP method, or `*` for any.
+          example: POST
+        path_pattern: {type: string, example: /api/login}
+        capacity: {type: integer, example: 5}
+        window_seconds:
+          type: integer
+          description: The rule refills at `capacity / window_seconds` tokens a second.
+          example: 60
+        created_at: {type: string, format: date-time}
+    EndpointRuleList:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          items: {$ref: "#/components/schemas/EndpointRule"}
+    CreateEndpointRuleRequest:
+      type: object
+      required: [method, path_pattern, capacity, window_seconds]
+      additionalProperties: false
+      properties:
+        method:
+          type: string
+          description: An HTTP method (any case; stored upper-case), or `*` for any.
+          maxLength: 16
+          example: POST
+        path_pattern:
+          type: string
+          description: See the pattern syntax above. At most 512 bytes.
+          maxLength: 512
+          example: /api/login
+        capacity: {type: integer, minimum: 1, maximum: 1000000000, example: 5}
+        window_seconds: {type: integer, minimum: 1, maximum: 86400, example: 60}

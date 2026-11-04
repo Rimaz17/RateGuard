@@ -1,8 +1,8 @@
 # Data model
 
-PostgreSQL holds everything that is configured: clients, their API keys and
-policies. Redis holds only bucket state and the policy-invalidation channel, and
-it arrives in later phases. The hot path (`/v1/check`) never reads Postgres
+PostgreSQL holds everything that is configured: policies and their endpoint rules,
+clients and their API keys. Redis holds only bucket state and the
+policy-invalidation channel. The hot path (`/v1/check`) never reads Postgres
 ([ADR 0004](adr/0004-the-hot-path-is-sacred.md)).
 
 The schema is defined by the numbered migrations in [`migrations/`](../migrations).
@@ -30,7 +30,31 @@ A named rate limit, such as Free, Premium or Enterprise. Policies are disabled
 | `window_seconds` | `INTEGER` | Period the capacity is quoted over. Greater than 0 |
 | `refill_rate` | `DOUBLE PRECISION` | Tokens returned per second. Finite and greater than 0 |
 | `enabled` | `BOOLEAN` | Default `true` |
+| `is_default` | `BOOLEAN` | Default `false`. At most one row is `true`, enforced by the partial unique index `policies_one_default_idx` |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | Default `now()` |
+
+The default policy applies to callers with no enabled policy of their own, including
+callers identified only by IP ([ADR 0009](adr/0009-policy-resolution-and-default-policy.md)).
+
+## `endpoint_rules`
+
+A policy's own limit for part of an API, such as 5 requests a minute on `/api/login`
+under the Free plan. A matching rule beats its policy's limit.
+[ADR 0010](adr/0010-endpoint-rule-matching-and-precedence.md) defines the pattern
+syntax and which rule wins when several match. A policy holds at most 100 rules.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` | Primary key, `uuidv7()` |
+| `policy_id` | `UUID` | References `policies(id)`, `ON DELETE CASCADE` |
+| `method` | `TEXT` | An upper-case HTTP method, or `*` for any |
+| `path_pattern` | `TEXT` | Starts with `/`, at most 512 bytes. Segments may be `*` (one segment) or, last, `**` (any number) |
+| `capacity` | `INTEGER` | Greater than 0 |
+| `window_seconds` | `INTEGER` | Greater than 0. The rule refills at `capacity / window_seconds` tokens a second |
+| `created_at` | `TIMESTAMPTZ` | Default `now()` |
+
+`(policy_id, method, path_pattern)` is unique. Its index leads with `policy_id`, so it
+also serves loading a policy's rules.
 
 ## `clients`
 

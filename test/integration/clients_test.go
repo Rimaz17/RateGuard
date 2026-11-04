@@ -108,8 +108,7 @@ func TestClientsReadAssignedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
-	// Assignment arrives with the policy API in phase 3; set it directly.
-	if _, err := pool.Exec(ctx, `UPDATE clients SET policy_id = $1 WHERE id = $2`, policy.ID, c.ID); err != nil {
+	if _, err := clients.AssignPolicy(ctx, c.ID, policy.ID); err != nil {
 		t.Fatalf("assigning policy: %v", err)
 	}
 

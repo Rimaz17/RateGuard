@@ -33,6 +33,18 @@ type Deps struct {
 	// Keys serves /v1/clients/{clientID}/keys. It is mounted only
 	// alongside Clients.
 	Keys KeyManager
+
+	// Policies serves the /v1/policies admin routes. When nil, they are
+	// not mounted.
+	Policies PolicyManager
+
+	// Rules serves /v1/policies/{policyID}/rules. It is mounted only
+	// alongside Policies.
+	Rules RuleManager
+
+	// Assigner serves PUT /v1/clients/{clientID}/policy. It is mounted only
+	// alongside Clients.
+	Assigner PolicyAssigner
 }
 
 // NewRouter builds the HTTP handler for the whole service.
@@ -56,6 +68,28 @@ func NewRouter(d Deps) http.Handler {
 				r.Get("/{clientID}/keys", kh.list)
 				r.Post("/{clientID}/keys", kh.issue)
 				r.Delete("/{clientID}/keys/{keyID}", kh.revoke)
+			}
+			if d.Assigner != nil {
+				ah := assignHandlers{logger: d.Logger, assigner: d.Assigner}
+				r.Put("/{clientID}/policy", ah.assign)
+			}
+		})
+	}
+
+	if d.Policies != nil {
+		ph := policyHandlers{logger: d.Logger, policies: d.Policies, validate: newValidator()}
+		r.Route("/v1/policies", func(r chi.Router) {
+			r.Use(AdminAuth(d.AdminToken))
+			r.Post("/", ph.create)
+			r.Get("/", ph.list)
+			r.Get("/{policyID}", ph.get)
+			r.Patch("/{policyID}", ph.update)
+			r.Delete("/{policyID}", ph.disable)
+			if d.Rules != nil {
+				rh := ruleHandlers{logger: d.Logger, rules: d.Rules, validate: ph.validate}
+				r.Get("/{policyID}/rules", rh.list)
+				r.Post("/{policyID}/rules", rh.create)
+				r.Delete("/{policyID}/rules/{ruleID}", rh.delete)
 			}
 		})
 	}
