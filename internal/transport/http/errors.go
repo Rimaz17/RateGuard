@@ -22,6 +22,10 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	case errors.Is(err, domain.ErrActiveKeyLimit):
 		writeError(w, r, http.StatusConflict,
 			fmt.Sprintf("client already has %d active API keys; revoke one before issuing another", domain.MaxActiveKeys))
+	case errors.Is(err, domain.ErrPolicyNotFound):
+		writeError(w, r, http.StatusNotFound, "policy not found")
+	case errors.Is(err, domain.ErrPolicyNameTaken):
+		writeError(w, r, http.StatusConflict, "another policy already has this name")
 	default:
 		logger.ErrorContext(r.Context(), "request failed",
 			slog.String("request_id", RequestIDFromContext(r.Context())),
