@@ -1,6 +1,6 @@
 # ADR 0008: The admin API requires a shared bearer token
 
-- **Status:** Accepted, pending the owner's review
+- **Status:** Accepted
 - **Date:** 2026-11-04
 
 ## Context
