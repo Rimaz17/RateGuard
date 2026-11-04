@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"cmp"
 	"path"
 	"strings"
 
@@ -10,12 +11,17 @@ import (
 // MaxPatternLen bounds an endpoint rule's path pattern, in bytes.
 const MaxPatternLen = 512
 
-// segmentKind says how a pattern segment matches.
+// segmentKind says how a pattern segment matches. The order is the
+// precedence of ADR 0010: a higher kind is more specific.
 type segmentKind uint8
 
 const (
 	// kindRest is "**": zero or more segments, only ever last.
 	kindRest segmentKind = iota + 1
+
+	// kindEnd stands for the position after a pattern's last segment. It
+	// ranks above kindRest so that /api beats /api/** for the path /api.
+	kindEnd
 
 	// kindAny is "*": exactly one segment.
 	kindAny
@@ -113,6 +119,33 @@ func (p Pattern) match(segs []string) bool {
 		}
 	}
 	return len(segs) == len(p.segs)
+}
+
+// kindAt returns the kind of the segment at position i, or kindEnd past the
+// last one.
+func (p Pattern) kindAt(i int) segmentKind {
+	if i < len(p.segs) {
+		return p.segs[i].kind
+	}
+	return kindEnd
+}
+
+// comparePatterns orders patterns by specificity: positive when a is more
+// specific than b, negative when less, zero when they have the same shape.
+// Patterns are compared segment by segment, left to right, and the first
+// position where their kinds differ decides (ADR 0010). It is a
+// lexicographic order on kind sequences, so it is transitive and sorting by
+// it is well defined.
+func comparePatterns(a, b Pattern) int {
+	for i := 0; ; i++ {
+		ka, kb := a.kindAt(i), b.kindAt(i)
+		if ka != kb {
+			return cmp.Compare(ka, kb)
+		}
+		if ka == kindEnd || ka == kindRest {
+			return 0
+		}
+	}
 }
 
 // splitPath normalises a request path as ADR 0010 requires and splits it
