@@ -77,6 +77,22 @@ cover: ## Run tests with the race detector and write coverage.out
 	go test -race -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
 
+# The token bucket engine must stay at or above this statement coverage
+# (CLAUDE.md section 8).
+ENGINE_COVER_MIN := 90
+
+.PHONY: cover-engine
+cover-engine: ## Fail if the token bucket engine's coverage in coverage.out is under 90% (run make cover first)
+	@test -f coverage.out || { echo "coverage.out is missing: run make cover first"; exit 1; }
+	@awk -v min=$(ENGINE_COVER_MIN) ' \
+		$$1 ~ /\/internal\/limiter\/engine\.go:/ { total += $$2; if ($$3 > 0) covered += $$2 } \
+		END { \
+			if (total == 0) { print "no coverage recorded for internal/limiter/engine.go"; exit 1 } \
+			pct = 100 * covered / total; \
+			printf "internal/limiter/engine.go: %.1f%% of statements covered (minimum %d%%)\n", pct, min; \
+			if (pct < min) exit 1 \
+		}' coverage.out
+
 .PHONY: fmt
 fmt: ## Format all Go files
 	gofmt -w .
