@@ -10,10 +10,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Rimaz17/RateGuard/internal/client"
 	"github.com/Rimaz17/RateGuard/internal/config"
+	"github.com/Rimaz17/RateGuard/internal/limiter"
 	"github.com/Rimaz17/RateGuard/internal/policy"
 	"github.com/Rimaz17/RateGuard/internal/storage/postgres"
 	httptransport "github.com/Rimaz17/RateGuard/internal/transport/http"
@@ -58,21 +62,59 @@ func serve() error {
 		}
 	}()
 
+	// Metrics go to a registry of their own, never the global one.
+	registry := prometheus.NewRegistry()
+	for _, c := range []prometheus.Collector{
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	} {
+		if err := registry.Register(c); err != nil {
+			return fmt.Errorf("registering runtime metrics: %w", err)
+		}
+	}
+	metrics, err := limiter.NewMetrics(registry)
+	if err != nil {
+		return err
+	}
+
 	clientStore := postgres.NewClients(pool)
 	policyStore := postgres.NewPolicies(pool)
 
-	// The resolver caches what decisions need (ADR 0005). Writes through
-	// the policy and client services drop changes from it directly and
+	// The resolver and the key cache hold what decisions need, so the hot
+	// path reads no database (ADR 0005, ADR 0012). Writes through the
+	// policy and client services drop changes from both directly and
 	// publish them for the other instances; the subscriber applies theirs
 	// here.
 	resolver := policy.NewResolver(clientStore, policyStore)
-	broadcaster := policy.NewBroadcaster(rdb, resolver, logger)
+	keys := client.NewKeyCache(postgres.NewAPIKeys(pool), client.DefaultKeyTTL)
+	caches := policy.Invalidators{resolver, policy.ClientChanges(keys)}
+	broadcaster := policy.NewBroadcaster(rdb, caches, logger)
 	clients := client.New(clientStore, postgres.NewAPIKeys(pool), broadcaster)
 	policies := policy.New(policyStore, postgres.NewEndpointRules(pool), clientStore, broadcaster)
-	// The subscriber stops on SIGINT/SIGTERM like everything else, and on
-	// any early return; the deferred stop runs before the Redis client
-	// closes, so it never outlives the connection it uses.
-	defer background(ctx, policy.NewSubscriber(rdb, resolver, logger).Run)()
+	// The background loops stop on SIGINT/SIGTERM like everything else, and
+	// on any early return; the deferred stops run before the Redis client
+	// closes, so nothing outlives the connection it uses.
+	defer background(ctx, policy.NewSubscriber(rdb, caches, logger).Run)()
+
+	// Buckets live in Redis behind a circuit breaker that degrades to an
+	// in-memory store while Redis is unreachable (ADR 0001, ADR 0014).
+	fallback := limiter.NewMemory(nil)
+	defer background(ctx, func(ctx context.Context) { fallback.Run(ctx, limiter.SweepInterval) })()
+	buckets, err := limiter.NewResilient(limiter.NewRedis(rdb), fallback, limiter.ResilientConfig{
+		Mode:             limiter.FailureMode(cfg.Redis.FailureMode),
+		InstanceCount:    cfg.InstanceCount,
+		Timeout:          cfg.Redis.Timeout,
+		FailureThreshold: cfg.Redis.BreakerFailures,
+		Cooldown:         cfg.Redis.BreakerCooldown,
+		Observer:         metrics,
+		Logger:           logger,
+	})
+	if err != nil {
+		return err
+	}
+	logger.Info("decisions use redis",
+		slog.String("failure_mode", cfg.Redis.FailureMode),
+		slog.Int("instance_count", cfg.InstanceCount))
 
 	router := httptransport.NewRouter(httptransport.Deps{
 		Logger: logger,
@@ -81,12 +123,16 @@ func serve() error {
 			{Name: "redis", Check: func(ctx context.Context) error { return rdb.Ping(ctx).Err() }},
 		},
 		ReadinessTimeout: cfg.ReadinessTimeout,
+		Metrics:          promhttp.HandlerFor(registry, promhttp.HandlerOpts{}),
 		AdminToken:       cfg.AdminToken.Value(),
 		Clients:          clients,
 		Keys:             clients,
 		Policies:         policies,
 		Rules:            policies,
 		Assigner:         policies,
+		Decider:          limiter.New(resolver, buckets),
+		Authenticator:    client.NewAuthenticator(keys),
+		TrustedProxies:   cfg.TrustedProxies,
 	})
 
 	srv := &http.Server{

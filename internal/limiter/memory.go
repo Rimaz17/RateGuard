@@ -104,6 +104,12 @@ func (m *Memory) Sweep() int {
 	return deleted
 }
 
+// SweepInterval is how often a long-lived Memory should be swept: often
+// enough that the buckets of passing callers do not pile up during a long
+// Redis outage, and rarely enough that the sweep's pass under the lock goes
+// unnoticed.
+const SweepInterval = time.Minute
+
 // Run sweeps the store every interval until ctx is done. The caller owns the
 // goroutine it runs on.
 func (m *Memory) Run(ctx context.Context, interval time.Duration) {
