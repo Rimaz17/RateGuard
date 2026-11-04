@@ -8,12 +8,14 @@ bucket shared across every RateGuard instance through Redis. Rate limiting lives
 service instead of being re-implemented in every application, and any language that can
 make an HTTP call can use it.
 
-> **Status: phase 3 (policies).** The service runs in Docker Compose next to Postgres and
-> Redis, applies its schema migrations, serves `GET /healthz` and `GET /readyz`, and has
-> an admin API to register applications, rotate their API keys, and manage policies,
-> endpoint rules and plan assignments. Every instance resolves which limit applies to a
-> request from an in-process cache kept in sync over Redis. The decision endpoint
-> (`/v1/check`) and the token bucket behind it are not implemented yet.
+> **Status: phase 4 (token bucket engine).** The service runs in Docker Compose next to
+> Postgres and Redis, applies its schema migrations, serves `GET /healthz` and
+> `GET /readyz`, and has an admin API to register applications, rotate their API keys,
+> and manage policies, endpoint rules and plan assignments. Every instance resolves which
+> limit applies to a request from an in-process cache kept in sync over Redis. The token
+> bucket engine and its in-memory store are built and proven in isolation; distributing
+> buckets through Redis (phase 5) and the decision endpoint `/v1/check` (phases 5 and 6)
+> come next.
 
 ## Architecture
 
@@ -108,7 +110,7 @@ invalid.
 | `POST /v1/policies`, `GET /v1/policies`, `GET/PATCH/DELETE /v1/policies/{id}` | Create, list, read, update and disable policies | Available |
 | `GET/POST /v1/policies/{id}/rules`, `DELETE /v1/policies/{id}/rules/{ruleID}` | A policy's endpoint rules | Available |
 | `PUT /v1/clients/{id}/policy` | Assign a policy to an application, or remove it with `null` | Available |
-| `POST /v1/check`, `POST /v1/peek` | Rate-limit decision | Phases 4–6 |
+| `POST /v1/check`, `POST /v1/peek` | Rate-limit decision | Phases 5–6 |
 | `GET /v1/analytics/usage`, `GET /metrics` | Usage analytics and Prometheus metrics | Phase 7 |
 
 The `/v1/clients` and `/v1/policies` routes require `Authorization: Bearer <RG_ADMIN_TOKEN>`
@@ -195,6 +197,42 @@ once ([ADR 0005](docs/adr/0005-policy-cache-ttl-pubsub-singleflight.md)). The
 integration suite measures a plan change made on one instance becoming visible on
 another in tens of milliseconds, and the 10-second TTL only matters if a message is lost.
 
+### The token bucket
+
+Each caller's bucket holds up to `capacity` tokens and refills continuously at
+`refill_rate` tokens a second. A request takes one token, and an empty bucket refuses
+it. Refill is computed lazily from the elapsed time whenever the bucket is used, so no
+timers run. A burst can use the whole capacity at once, while the long-run rate stays at
+the refill rate. [ADR 0011](docs/adr/0011-token-bucket-semantics.md) pins down the
+details so every store decides identically:
+
+| Field | Meaning |
+|---|---|
+| `limit` | The bucket's capacity |
+| `remaining` | Whole tokens left after this decision |
+| `reset_after` | Time until the bucket is full again if nothing else uses it |
+| `retry_after` | On a refusal only: time until one token is back. Retrying then is allowed |
+
+The engine (`internal/limiter/engine.go`) is a pure function of a bucket's state, its
+limit and the time it is given. It never reads a clock itself, because in phase 5 that
+time comes from Redis ([ADR 0002](docs/adr/0002-redis-is-the-only-clock.md)). The
+in-memory store applies it under a mutex. That store is exact on one instance, and in
+phase 5 it becomes the fallback when Redis is down
+([ADR 0001](docs/adr/0001-redis-failure-degrades-to-local-bucket.md)). It deletes
+buckets that have refilled to capacity, since they decide exactly as new ones do.
+
+The tests check, without any network:
+
+- bursts and steady drain: exactly `capacity + rate × elapsed` requests get through,
+  never one more;
+- refill boundaries at and around the nanosecond a token is due;
+- a clock that stands still or jumps back;
+- capacity raised and lowered under a client;
+- degenerate limits;
+- a fuzz test of the invariants;
+- concurrent consumption under `-race`: 3,200 racing takes on a bucket of 1,000 admit
+  exactly 1,000.
+
 ## Data model
 
 PostgreSQL holds the configuration: policies and their endpoint rules, clients and their API keys. Redis holds only ephemeral bucket state. The schema lives in
@@ -217,6 +255,7 @@ make help             # list every target
 make check            # gofmt check, go vet, golangci-lint, go test -race: run before committing
 make test             # unit tests with the race detector
 make test-integration # testcontainers suite against real Postgres and Redis (needs Docker)
+make cover            # race-tested unit tests with coverage.out; make cover-engine then checks the engine's 90% floor
 make lint-docker      # the pinned golangci-lint in Docker, if it is not installed locally
 make run              # run on the host with the current environment
 ```
@@ -248,7 +287,8 @@ reachable Docker daemon. When running it inside a container on Docker Desktop, m
 Docker socket and set `TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal`.
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every push and pull
-request: format, vet, lint and race-tested unit tests; the integration suite, which
+request: format, vet, lint and race-tested unit tests, with the token bucket engine held
+to at least 90% statement coverage; the integration suite, which
 includes a migrations up/down/up round trip on a fresh database; and an image build
 followed by `make up`, `make smoke`, checks of the admin API (clients, then a policy
 with a rule assigned to a client, and the instance's subscription to policy changes), a
@@ -263,6 +303,7 @@ internal/config/          environment configuration and validation
 internal/domain/          entities and sentinel errors; standard library only
 internal/client/          client registration, API key issue, rotation and authentication
 internal/policy/          policy and rule management, resolution, its cache and pub/sub sync
+internal/limiter/         the token bucket engine and its stores (in memory so far)
 internal/storage/postgres pgx pool, repositories and the migrator
 internal/transport/http   chi router, handlers and middleware (package httptransport)
 migrations/               numbered SQL migrations, embedded in the binary
@@ -271,7 +312,7 @@ test/integration/         testcontainers suite (build tag: integration)
 docs/                     data model and architecture decision records
 ```
 
-Later phases add `internal/limiter` and `internal/analytics`.
+Phase 7 adds `internal/analytics`.
 
 ## Performance
 
