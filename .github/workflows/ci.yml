@@ -46,6 +46,8 @@ jobs:
         run: go test -race -coverprofile=coverage.out ./...
       - name: coverage summary
         run: go tool cover -func=coverage.out | tail -1
+      - name: token bucket engine coverage is at least 90%
+        run: make cover-engine
 
   integration:
     name: integration tests (testcontainers)
