@@ -139,6 +139,12 @@ func TestWriteServiceError(t *testing.T) {
 		{fmt.Errorf("getting client: %w", domain.ErrClientNotFound), http.StatusNotFound, "client not found"},
 		{fmt.Errorf("revoking key: %w", domain.ErrAPIKeyNotFound), http.StatusNotFound, "API key not found"},
 		{fmt.Errorf("issuing key: %w", domain.ErrActiveKeyLimit), http.StatusConflict, "revoke one before issuing another"},
+		{fmt.Errorf("getting policy: %w", domain.ErrPolicyNotFound), http.StatusNotFound, "policy not found"},
+		{fmt.Errorf("creating policy: %w", domain.ErrPolicyNameTaken), http.StatusConflict, "another policy already has this name"},
+		{fmt.Errorf("deleting endpoint rule: %w", domain.ErrEndpointRuleNotFound), http.StatusNotFound, "endpoint rule not found"},
+		{fmt.Errorf("creating endpoint rule: %w", domain.ErrEndpointRuleExists), http.StatusConflict, "already has a rule for this method and path pattern"},
+		{fmt.Errorf("creating endpoint rule: %w", domain.ErrEndpointRuleLimit), http.StatusConflict, "already has 100 endpoint rules"},
+		{fmt.Errorf("creating endpoint rule: %w", &domain.ValidationError{Field: "path_pattern", Reason: "must start with /"}), http.StatusBadRequest, "path_pattern must start with /"},
 		{errors.New("selecting client: connection refused to db.internal:5432"), http.StatusInternalServerError, "internal server error"},
 	}
 	for _, tt := range tests {

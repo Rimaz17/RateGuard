@@ -418,6 +418,106 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/policies/{policyID}/rules:
+    parameters:
+      - $ref: "#/components/parameters/PolicyID"
+    get:
+      tags: [policies]
+      operationId: listEndpointRules
+      summary: List a policy's endpoint rules
+      description: The policy's rules in creation order. Precedence does not depend on this order.
+      responses:
+        "200":
+          description: The policy's rules.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndpointRuleList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [policies]
+      operationId: createEndpointRule
+      summary: Add an endpoint rule
+      description: |
+        Gives requests matching `method` and `path_pattern` their own limit
+        within the policy, in place of the policy's own. Every path a rule
+        matches shares one bucket per caller.
+
+        **Patterns.** A pattern starts with `/`. A segment is a literal
+        (matched exactly, case-sensitively), `*` (exactly one segment) or,
+        as the last segment only, `**` (zero or more segments). Request paths
+        are cleaned before matching, so `/api/login/` and `/api//login` both
+        match `/api/login`.
+
+        **Precedence.** When several rules match, the most specific wins:
+        patterns are compared segment by segment from the left, and at the
+        first difference a literal beats `*`, which beats `**`. Between
+        equally specific patterns, a rule for the request's method beats one
+        for `*`. See ADR 0010.
+
+        A policy holds at most 100 rules.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEndpointRuleRequest"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndpointRule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/policies/{policyID}/rules/{ruleID}:
+    parameters:
+      - $ref: "#/components/parameters/PolicyID"
+      - name: ruleID
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    delete:
+      tags: [policies]
+      operationId: deleteEndpointRule
+      summary: Delete an endpoint rule
+      description: Requests it matched fall under the policy's own limit, or under the next most specific rule. A rule of another policy is treated as not found.
+      responses:
+        "204":
+          description: Deleted.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
   securitySchemes:
     adminToken:
@@ -656,3 +756,44 @@ components:
         refill_rate: {type: number, exclusiveMinimum: 0, maximum: 1000000000}
         enabled: {type: boolean}
         default: {type: boolean}
+    EndpointRule:
+      type: object
+      required: [id, policy_id, method, path_pattern, capacity, window_seconds, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        policy_id: {type: string, format: uuid}
+        method:
+          type: string
+          description: An upper-case HTTP method, or `*` for any.
+          example: POST
+        path_pattern: {type: string, example: /api/login}
+        capacity: {type: integer, example: 5}
+        window_seconds:
+          type: integer
+          description: The rule refills at `capacity / window_seconds` tokens a second.
+          example: 60
+        created_at: {type: string, format: date-time}
+    EndpointRuleList:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          items: {$ref: "#/components/schemas/EndpointRule"}
+    CreateEndpointRuleRequest:
+      type: object
+      required: [method, path_pattern, capacity, window_seconds]
+      additionalProperties: false
+      properties:
+        method:
+          type: string
+          description: An HTTP method (any case; stored upper-case), or `*` for any.
+          maxLength: 16
+          example: POST
+        path_pattern:
+          type: string
+          description: See the pattern syntax above. At most 512 bytes.
+          maxLength: 512
+          example: /api/login
+        capacity: {type: integer, minimum: 1, maximum: 1000000000, example: 5}
+        window_seconds: {type: integer, minimum: 1, maximum: 86400, example: 60}

@@ -37,6 +37,10 @@ type Deps struct {
 	// Policies serves the /v1/policies admin routes. When nil, they are
 	// not mounted.
 	Policies PolicyManager
+
+	// Rules serves /v1/policies/{policyID}/rules. It is mounted only
+	// alongside Policies.
+	Rules RuleManager
 }
 
 // NewRouter builds the HTTP handler for the whole service.
@@ -73,6 +77,12 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/{policyID}", ph.get)
 			r.Patch("/{policyID}", ph.update)
 			r.Delete("/{policyID}", ph.disable)
+			if d.Rules != nil {
+				rh := ruleHandlers{logger: d.Logger, rules: d.Rules, validate: ph.validate}
+				r.Get("/{policyID}/rules", rh.list)
+				r.Post("/{policyID}/rules", rh.create)
+				r.Delete("/{policyID}/rules/{ruleID}", rh.delete)
+			}
 		})
 	}
 
