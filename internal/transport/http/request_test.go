@@ -72,6 +72,15 @@ func TestDecodeJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONLimitNamesItsOwnLimit(t *testing.T) {
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(`{"name":"`+strings.Repeat("a", 64)+`"}`))
+	var dst sample
+	err := decodeJSONLimit(httptest.NewRecorder(), req, &dst, 32)
+	if err == nil || err.status != http.StatusRequestEntityTooLarge || err.message != "request body must be at most 32 bytes" {
+		t.Errorf("decodeJSONLimit over a 32-byte limit = %v, want 413 naming 32 bytes", err)
+	}
+}
+
 func TestValidateRequest(t *testing.T) {
 	v := newValidator()
 	tests := []struct {
