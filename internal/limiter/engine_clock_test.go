@@ -122,6 +122,31 @@ func TestBackwardsClockRefillsNothingAndKeepsLastRefill(t *testing.T) {
 	}
 }
 
+// TestBackwardsClockDurationsIncludeTheLag: while the clock reads earlier
+// than the last refill, nothing refills until it catches up, so retry_after
+// and reset_after must count that wait too. Found by FuzzEngineInvariants:
+// without it, retrying after retry_after was refused again.
+func TestBackwardsClockDurationsIncludeTheLag(t *testing.T) {
+	l := limiter.Limit{Capacity: 4, RefillRate: 2} // a token every 500ms
+	b, _ := takeN(t, limiter.Bucket{}, l, t0, 4)
+
+	behind := t0.Add(-time.Second)
+	b, d := limiter.Take(b, l, behind)
+	want := limiter.Decision{Allowed: false, Limit: 4, Remaining: 0, ResetAfter: 3 * time.Second, RetryAfter: 1500 * time.Millisecond}
+	if d != want {
+		t.Fatalf("with the clock a second behind = %+v, want %+v", d, want)
+	}
+	if _, early := limiter.Take(b, l, behind.Add(d.RetryAfter-time.Millisecond)); early.Allowed {
+		t.Error("allowed before RetryAfter had passed")
+	}
+	if _, retry := limiter.Take(b, l, behind.Add(d.RetryAfter)); !retry.Allowed {
+		t.Error("refused after waiting RetryAfter")
+	}
+	if full := limiter.Peek(b, l, behind.Add(d.ResetAfter)); full.Remaining != 4 {
+		t.Errorf("after ResetAfter the bucket holds %d, want 4", full.Remaining)
+	}
+}
+
 func TestBackwardsClockKeepsTheBalance(t *testing.T) {
 	l := limiter.Limit{Capacity: 10, RefillRate: 1}
 	b, _ := takeN(t, limiter.Bucket{}, l, t0, 3)

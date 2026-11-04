@@ -77,10 +77,10 @@ type Decision struct {
 func Take(b Bucket, l Limit, now time.Time) (Bucket, Decision) {
 	b = refill(b, l, now)
 	if b.Tokens < 1-wholeTokenTolerance || l.Capacity < 1 {
-		return b, decide(b, l, false)
+		return b, decide(b, l, now, false)
 	}
 	b.Tokens = max(b.Tokens-1, 0)
-	return b, decide(b, l, true)
+	return b, decide(b, l, now, true)
 }
 
 // Peek reports what Take would decide at now, without taking a token. Its
@@ -88,7 +88,7 @@ func Take(b Bucket, l Limit, now time.Time) (Bucket, Decision) {
 func Peek(b Bucket, l Limit, now time.Time) Decision {
 	b = refill(b, l, now)
 	allowed := b.Tokens >= 1-wholeTokenTolerance && l.Capacity >= 1
-	return decide(b, l, allowed)
+	return decide(b, l, now, allowed)
 }
 
 // refill brings the balance up to date at now. A new bucket is full. Zero or
@@ -119,23 +119,39 @@ func refill(b Bucket, l Limit, now time.Time) Bucket {
 }
 
 // decide describes a refilled bucket b after the decision has been applied
-// to it.
-func decide(b Bucket, l Limit, allowed bool) Decision {
+// to it, as seen at now.
+func decide(b Bucket, l Limit, now time.Time, allowed bool) Decision {
+	// After the clock has gone backwards, b.LastRefill is ahead of now and
+	// refill only resumes once now passes it, so durations measured from
+	// now must include that lag or they would come out too short.
+	lag := max(b.LastRefill.Sub(now), 0)
+
 	capacity := max(l.Capacity, 0)
 	d := Decision{
-		Allowed:    allowed,
-		Limit:      capacity,
-		Remaining:  min(int(math.Floor(b.Tokens+wholeTokenTolerance)), capacity),
-		ResetAfter: timeToRefill(float64(capacity)-b.Tokens, l.RefillRate),
+		Allowed:   allowed,
+		Limit:     capacity,
+		Remaining: min(int(math.Floor(b.Tokens+wholeTokenTolerance)), capacity),
+	}
+	if toFull := timeToRefill(float64(capacity)-b.Tokens, l.RefillRate); toFull > 0 {
+		d.ResetAfter = addSaturating(lag, toFull)
 	}
 	if !allowed {
-		d.RetryAfter = timeToRefill(1-b.Tokens, l.RefillRate)
+		d.RetryAfter = addSaturating(lag, timeToRefill(1-b.Tokens, l.RefillRate))
 		if l.Capacity < 1 {
 			// A bucket that holds no tokens never admits anyone.
 			d.RetryAfter = math.MaxInt64
 		}
 	}
 	return d
+}
+
+// addSaturating adds two non-negative durations, stopping at the largest
+// Duration instead of overflowing.
+func addSaturating(a, b time.Duration) time.Duration {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
 }
 
 // maxDurationNanos is the largest time.Duration as a float64. The conversion
