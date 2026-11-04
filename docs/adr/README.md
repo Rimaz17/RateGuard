@@ -16,6 +16,7 @@ decision itself and its consequences. ADRs 0001–0006 are the six binding decis
 | [0008](0008-admin-api-bearer-token.md) | The admin API requires a shared bearer token |
 | [0009](0009-policy-resolution-and-default-policy.md) | How a request's policy is resolved, and the default policy |
 | [0010](0010-endpoint-rule-matching-and-precedence.md) | Endpoint rule matching and precedence |
+| [0011](0011-token-bucket-semantics.md) | Token bucket semantics |
 
 New ADRs take the next number. To change an accepted ADR, mark it superseded and write
 a new one rather than editing it in place.
