@@ -160,10 +160,12 @@ func newGate(value string) *gate {
 
 func (g *gate) load(ctx context.Context, _ string) (string, error) {
 	g.reads.Add(1)
+	// The value is read when the load starts, as a database query would.
+	v := g.value.Load().(string)
 	g.started <- struct{}{}
 	select {
 	case <-g.release:
-		return g.value.Load().(string), nil
+		return v, nil
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
@@ -251,5 +253,40 @@ func TestCallerGivingUpDoesNotFailOthers(t *testing.T) {
 	close(g.release)
 	if v := <-second; v != "1" {
 		t.Errorf("patient Get = %q, want 1", v)
+	}
+}
+
+// A caller that arrives after an invalidation must not be handed the result
+// of a load that started before it: that load may have read the old value.
+func TestCallersAfterAnInvalidationDoNotJoinAnOlderLoad(t *testing.T) {
+	for name, invalidate := range map[string]func(c *cache.Cache[string]){
+		"Invalidate": func(c *cache.Cache[string]) { c.Invalidate("a") },
+		"Flush":      func(c *cache.Cache[string]) { c.Flush() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGate("stale")
+			c := cache.New(time.Hour, 5*time.Second, nil, g.load)
+
+			go func() { _, _ = c.Get(t.Context(), "a") }()
+			<-g.started
+			invalidate(c)
+			g.value.Store("fresh")
+
+			late := make(chan string, 1)
+			go func() {
+				v, _ := c.Get(t.Context(), "a")
+				late <- v
+			}()
+			// The late caller should start a load of its own; if it joins
+			// the old one instead, there is no second start to wait for.
+			select {
+			case <-g.started:
+			case <-time.After(200 * time.Millisecond):
+			}
+			close(g.release)
+			if v := <-late; v != "fresh" {
+				t.Errorf("caller arriving after %s got %q, want fresh", name, v)
+			}
+		})
 	}
 }

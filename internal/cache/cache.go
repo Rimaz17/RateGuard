@@ -5,6 +5,7 @@ package cache
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
@@ -66,12 +67,17 @@ func New[V any](ttl, loadTimeout time.Duration, now func() time.Time, load Loade
 // Get returns the cached value for key, loading it on a miss. A caller whose
 // context ends stops waiting, but the shared load carries on for the others.
 func (c *Cache[V]) Get(ctx context.Context, key string) (V, error) {
-	if v, ok := c.lookup(key); ok {
+	v, epoch, ok := c.lookup(key)
+	if ok {
 		return v, nil
 	}
+	// Loads are shared only between callers that missed in the same epoch.
+	// A caller arriving after an invalidation therefore starts a load of
+	// its own instead of joining one that may have read the old value.
+	flight := key + "\x00" + strconv.FormatUint(epoch, 10)
 	// DoChan runs the load on a goroutine owned by singleflight. It ends
 	// when the load does, which loadTimeout bounds.
-	ch := c.flights.DoChan(key, func() (any, error) { return c.fill(ctx, key) })
+	ch := c.flights.DoChan(flight, func() (any, error) { return c.fill(ctx, key, epoch) })
 	select {
 	case res := <-ch:
 		if res.Err != nil {
@@ -85,25 +91,26 @@ func (c *Cache[V]) Get(ctx context.Context, key string) (V, error) {
 	}
 }
 
-func (c *Cache[V]) lookup(key string) (V, bool) {
+// lookup returns the live entry for key, or the epoch in which it missed.
+func (c *Cache[V]) lookup(key string) (V, uint64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	it, ok := c.items[key]
 	if !ok {
 		var zero V
-		return zero, false
+		return zero, c.epoch, false
 	}
 	if !c.now().Before(it.expires) {
 		delete(c.items, key)
 		var zero V
-		return zero, false
+		return zero, c.epoch, false
 	}
-	return it.value, true
+	return it.value, c.epoch, true
 }
 
 // fill loads key and caches the result unless an invalidation happened
-// while it was loading.
-func (c *Cache[V]) fill(ctx context.Context, key string) (V, error) {
+// since start, the epoch in which the callers missed.
+func (c *Cache[V]) fill(ctx context.Context, key string, start uint64) (V, error) {
 	// A caller can miss in lookup just before another flight stores its
 	// result, and reach DoChan just after that flight has ended. Checking
 	// again here serves it the stored value instead of loading twice.
@@ -112,7 +119,6 @@ func (c *Cache[V]) fill(ctx context.Context, key string) (V, error) {
 		c.mu.Unlock()
 		return it.value, nil
 	}
-	start := c.epoch
 	c.mu.Unlock()
 
 	// The load is shared by every caller waiting on key, so the first
@@ -140,11 +146,11 @@ func (c *Cache[V]) Invalidate(key string) {
 	delete(c.items, key)
 	c.epoch++
 	c.mu.Unlock()
-	c.flights.Forget(key)
 }
 
 // Flush drops every entry, for when invalidations may have been missed.
-// Loads already in flight finish but do not store their results.
+// Loads already in flight finish but do not store their results, and
+// callers that arrive afterwards do not join them.
 func (c *Cache[V]) Flush() {
 	c.mu.Lock()
 	clear(c.items)
