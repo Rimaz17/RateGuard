@@ -3,9 +3,21 @@ package policy
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Rimaz17/RateGuard/internal/domain"
 )
+
+// DefaultTTL is how long a cached entry lives without an invalidation. It is
+// a safety net for a missed pub/sub message, not the primary mechanism
+// (ADR 0005).
+const DefaultTTL = 10 * time.Second
+
+// defaultLoadTimeout bounds one shared cache load from Postgres.
+const defaultLoadTimeout = 5 * time.Second
+
+// defaultKey is the default-policy cache's only key.
+const defaultKey = "default"
 
 // Assignments reads which policy each client is assigned.
 type Assignments interface {
@@ -22,15 +34,60 @@ type Catalog interface {
 	DefaultID(ctx context.Context) (string, error)
 }
 
-// Resolver works out the limit that applies to a request.
+// Resolver works out the limit that applies to a request. It caches what it
+// reads (ADR 0005), so after warming up a decision touches no database:
+//
+//   - each client's policy ID, dropped by a client change;
+//   - each policy, compiled with its rules, dropped by a policy change;
+//   - the default policy's ID, dropped by any policy change, since any
+//     policy write may move the default flag.
+//
+// A Resolver is safe for concurrent use.
 type Resolver struct {
-	clients  Assignments
-	policies Catalog
+	clients  *cache[string]
+	policies *cache[*compiledPolicy]
+	defaults *cache[string]
+}
+
+// Option configures a Resolver.
+type Option func(*options)
+
+type options struct {
+	ttl time.Duration
+	now func() time.Time
+}
+
+// WithTTL sets how long cached entries live. The default is DefaultTTL.
+func WithTTL(ttl time.Duration) Option {
+	return func(o *options) { o.ttl = ttl }
+}
+
+// WithClock sets the clock that expires cached entries. It exists for
+// tests; the default is time.Now. It never touches bucket arithmetic, which
+// runs on Redis's clock (ADR 0002).
+func WithClock(now func() time.Time) Option {
+	return func(o *options) { o.now = now }
 }
 
 // NewResolver returns a Resolver that reads from the given sources.
-func NewResolver(clients Assignments, policies Catalog) *Resolver {
-	return &Resolver{clients: clients, policies: policies}
+func NewResolver(clients Assignments, policies Catalog, opts ...Option) *Resolver {
+	o := options{ttl: DefaultTTL, now: time.Now}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return &Resolver{
+		clients: newCache(o.ttl, defaultLoadTimeout, o.now, clients.PolicyID),
+		policies: newCache(o.ttl, defaultLoadTimeout, o.now, func(ctx context.Context, id string) (*compiledPolicy, error) {
+			p, rules, err := policies.GetWithRules(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			return compile(p, rules)
+		}),
+		defaults: newCache(o.ttl, defaultLoadTimeout, o.now, func(ctx context.Context, _ string) (string, error) {
+			return policies.DefaultID(ctx)
+		}),
+	}
 }
 
 // Resolve returns the limit for a request from the caller id to method and
@@ -47,7 +104,7 @@ func NewResolver(clients Assignments, policies Catalog) *Resolver {
 func (r *Resolver) Resolve(ctx context.Context, id domain.Identity, method, requestPath string) (domain.ResolvedLimit, error) {
 	switch id.Kind {
 	case domain.IdentityAPIKey:
-		policyID, err := r.clients.PolicyID(ctx, id.ClientID)
+		policyID, err := r.clients.get(ctx, id.ClientID)
 		if err != nil {
 			return domain.ResolvedLimit{}, fmt.Errorf("resolving policy of client %s: %w", id.ClientID, err)
 		}
@@ -65,7 +122,7 @@ func (r *Resolver) Resolve(ctx context.Context, id domain.Identity, method, requ
 		return domain.ResolvedLimit{}, fmt.Errorf("resolving policy: unknown identity kind %q", id.Kind)
 	}
 
-	defaultID, err := r.policies.DefaultID(ctx)
+	defaultID, err := r.defaults.get(ctx, defaultKey)
 	if err != nil {
 		return domain.ResolvedLimit{}, fmt.Errorf("resolving default policy: %w", err)
 	}
@@ -83,13 +140,28 @@ func (r *Resolver) Resolve(ctx context.Context, id domain.Identity, method, requ
 }
 
 func (r *Resolver) policy(ctx context.Context, id string) (*compiledPolicy, error) {
-	p, rules, err := r.policies.GetWithRules(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("loading policy %s: %w", id, err)
-	}
-	cp, err := compile(p, rules)
+	cp, err := r.policies.get(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("loading policy %s: %w", id, err)
 	}
 	return cp, nil
+}
+
+// Invalidate drops whatever the change may have made stale.
+func (r *Resolver) Invalidate(c Change) {
+	switch c.Kind {
+	case KindClient:
+		r.clients.invalidate(c.ID)
+	case KindPolicy:
+		r.policies.invalidate(c.ID)
+		r.defaults.invalidate(defaultKey)
+	}
+}
+
+// Flush drops everything. It is for when invalidations may have been missed,
+// such as after the pub/sub connection drops and reconnects.
+func (r *Resolver) Flush() {
+	r.clients.flush()
+	r.policies.flush()
+	r.defaults.flush()
 }

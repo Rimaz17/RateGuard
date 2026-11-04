@@ -21,6 +21,11 @@ type fakeStore struct {
 	// err, when set, fails every read.
 	err error
 
+	// hold, when set, makes GetWithRules read the policy and then wait for
+	// the channel to close before returning, like a slow query that has
+	// already taken its snapshot.
+	hold chan struct{}
+
 	clientReads, policyReads, defaultReads int
 }
 
@@ -46,18 +51,37 @@ func (s *fakeStore) PolicyID(_ context.Context, clientID string) (string, error)
 	return id, nil
 }
 
-func (s *fakeStore) GetWithRules(_ context.Context, id string) (domain.Policy, []domain.EndpointRule, error) {
+func (s *fakeStore) GetWithRules(ctx context.Context, id string) (domain.Policy, []domain.EndpointRule, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.policyReads++
-	if s.err != nil {
-		return domain.Policy{}, nil, s.err
-	}
+	err := s.err
 	p, ok := s.policies[id]
+	rules := append([]domain.EndpointRule(nil), s.rules[id]...)
+	hold := s.hold
+	s.mu.Unlock()
+
+	if hold != nil {
+		// Like a real query, the wait ends early if the context does.
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return domain.Policy{}, nil, ctx.Err()
+		}
+	}
+	if err != nil {
+		return domain.Policy{}, nil, err
+	}
 	if !ok {
 		return domain.Policy{}, nil, domain.ErrPolicyNotFound
 	}
-	return p, append([]domain.EndpointRule(nil), s.rules[id]...), nil
+	return p, rules, nil
+}
+
+// reads returns how many times each source method has been called.
+func (s *fakeStore) reads() (clients, policies, defaults int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clientReads, s.policyReads, s.defaultReads
 }
 
 func (s *fakeStore) DefaultID(context.Context) (string, error) {
