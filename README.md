@@ -8,10 +8,12 @@ bucket shared across every RateGuard instance through Redis. Rate limiting lives
 service instead of being re-implemented in every application, and any language that can
 make an HTTP call can use it.
 
-> **Status: phase 2 (clients and API keys).** The service runs in Docker Compose next to
-> Postgres and Redis, applies its schema migrations, serves `GET /healthz` and
-> `GET /readyz`, and has an admin API to register applications and issue, rotate and
-> revoke their API keys. Rate limiting itself is not implemented yet.
+> **Status: phase 3 (policies).** The service runs in Docker Compose next to Postgres and
+> Redis, applies its schema migrations, serves `GET /healthz` and `GET /readyz`, and has
+> an admin API to register applications, rotate their API keys, and manage policies,
+> endpoint rules and plan assignments. Every instance resolves which limit applies to a
+> request from an in-process cache kept in sync over Redis. The decision endpoint
+> (`/v1/check`) and the token bucket behind it are not implemented yet.
 
 ## Architecture
 
@@ -103,11 +105,13 @@ invalid.
 | `GET /v1/clients`, `GET /v1/clients/{id}` | List (paged) and read applications | Available |
 | `GET /v1/clients/{id}/keys` | List an application's keys, by prefix only | Available |
 | `POST /v1/clients/{id}/keys`, `DELETE /v1/clients/{id}/keys/{keyID}` | Issue a second key for rotation; revoke a key | Available |
-| `POST/PATCH/DELETE /v1/policies`, `PUT /v1/clients/{id}/policy` | Policy management | Phase 3 |
+| `POST /v1/policies`, `GET /v1/policies`, `GET/PATCH/DELETE /v1/policies/{id}` | Create, list, read, update and disable policies | Available |
+| `GET/POST /v1/policies/{id}/rules`, `DELETE /v1/policies/{id}/rules/{ruleID}` | A policy's endpoint rules | Available |
+| `PUT /v1/clients/{id}/policy` | Assign a policy to an application, or remove it with `null` | Available |
 | `POST /v1/check`, `POST /v1/peek` | Rate-limit decision | Phases 4–6 |
 | `GET /v1/analytics/usage`, `GET /metrics` | Usage analytics and Prometheus metrics | Phase 7 |
 
-The `/v1/clients` routes require `Authorization: Bearer <RG_ADMIN_TOKEN>`
+The `/v1/clients` and `/v1/policies` routes require `Authorization: Bearer <RG_ADMIN_TOKEN>`
 ([ADR 0008](docs/adr/0008-admin-api-bearer-token.md)). Every error response is
 `{"error": "...", "request_id": "..."}`, and never carries internal detail.
 
@@ -142,9 +146,54 @@ API show. RateGuard stores only the SHA-256 digest of the full key
 ([ADR 0006](docs/adr/0006-api-keys-sha256-two-active.md)). An application can hold two
 active keys at once, so a third is refused with `409` until one is revoked.
 
-Callers of the decision endpoints (from phase 4) will send their key as
+Callers of the decision endpoints (from phase 5) will send their key as
 `Authorization: Bearer <key>`. A caller without a key is identified by its IP address.
 `X-Forwarded-For` is only believed from the proxies listed in `RG_TRUSTED_PROXIES`.
+
+### Policies, endpoint rules and plans
+
+A policy is a named limit such as "100 requests per 60 seconds". An endpoint rule gives
+part of an API its own limit inside a policy, so `/api/login` can be far stricter than
+the rest:
+
+```bash
+# The Free plan, made the default for callers without a plan of their own.
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"name":"Free","capacity":100,"window_seconds":60,"default":true}' http://127.0.0.1:8080/v1/policies
+# {"id":"<policy-id>","name":"Free","capacity":100,"window_seconds":60,"refill_rate":1.6666666666666667,"enabled":true,"default":true,...}
+
+# 5 login attempts a minute on the Free plan.
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"method":"POST","path_pattern":"/api/login","capacity":5,"window_seconds":60}' http://127.0.0.1:8080/v1/policies/<policy-id>/rules
+
+# Put an application on the plan ({"policy_id":null} takes it off again).
+curl -s -H "Authorization: Bearer $TOKEN" -X PUT -H 'Content-Type: application/json' -d '{"policy_id":"<policy-id>"}' http://127.0.0.1:8080/v1/clients/<client-id>/policy
+
+# Change the plan's limit; DELETE disables it.
+curl -s -H "Authorization: Bearer $TOKEN" -X PATCH -H 'Content-Type: application/json' -d '{"capacity":200}' http://127.0.0.1:8080/v1/policies/<policy-id>
+```
+
+Which limit applies to a request ([ADR 0009](docs/adr/0009-policy-resolution-and-default-policy.md)):
+
+1. A caller with an API key uses its application's policy, if it has one and it is
+   enabled.
+2. Anyone else, including a caller identified by IP, uses the default policy, if there is
+   one and it is enabled.
+3. Otherwise the caller has no policy and will be refused: RateGuard never falls back to
+   "unlimited".
+
+Within that policy, the most specific matching endpoint rule beats the policy's own
+limit ([ADR 0010](docs/adr/0010-endpoint-rule-matching-and-precedence.md)). A pattern's
+segments are literals, `*` for exactly one segment, or a final `**` for any number.
+Patterns are compared from the left, and at the first difference a literal beats `*`,
+which beats `**`. Between equally specific patterns, a rule naming the request's method
+beats one for `*`. Request paths are cleaned first, so `/api/login/` cannot dodge a
+rule on `/api/login`. A refill rate defaults to `capacity / window_seconds`; set
+`refill_rate` on a policy to allow bursts above the sustained rate.
+
+Every instance caches resolution data for 10 seconds, and every admin write publishes
+the changed ID on the Redis channel `rg:policy:invalidate`, so each instance drops it at
+once ([ADR 0005](docs/adr/0005-policy-cache-ttl-pubsub-singleflight.md)). The
+integration suite measures a plan change made on one instance becoming visible on
+another in tens of milliseconds, and the 10-second TTL only matters if a message is lost.
 
 ## Data model
 
@@ -201,8 +250,10 @@ Docker socket and set `TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal`.
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every push and pull
 request: format, vet, lint and race-tested unit tests; the integration suite, which
 includes a migrations up/down/up round trip on a fresh database; and an image build
-followed by `make up`, `make smoke`, a migrate down and up through the binary, and a
-check that `/readyz` turns 503 when Postgres stops and 200 when it returns.
+followed by `make up`, `make smoke`, checks of the admin API (clients, then a policy
+with a rule assigned to a client, and the instance's subscription to policy changes), a
+migrate down and up through the binary, and a check that `/readyz` turns 503 when
+Postgres stops and 200 when it returns.
 
 ### Layout
 
@@ -211,6 +262,7 @@ cmd/rateguard/            composition root: wiring and the migrate subcommand
 internal/config/          environment configuration and validation
 internal/domain/          entities and sentinel errors; standard library only
 internal/client/          client registration, API key issue, rotation and authentication
+internal/policy/          policy and rule management, resolution, its cache and pub/sub sync
 internal/storage/postgres pgx pool, repositories and the migrator
 internal/transport/http   chi router, handlers and middleware (package httptransport)
 migrations/               numbered SQL migrations, embedded in the binary
@@ -219,7 +271,7 @@ test/integration/         testcontainers suite (build tag: integration)
 docs/                     data model and architecture decision records
 ```
 
-Later phases add `internal/limiter`, `policy` and `analytics`.
+Later phases add `internal/limiter` and `internal/analytics`.
 
 ## Performance
 
