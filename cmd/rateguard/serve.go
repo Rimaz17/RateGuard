@@ -60,14 +60,15 @@ func serve() error {
 
 	clientStore := postgres.NewClients(pool)
 	policyStore := postgres.NewPolicies(pool)
-	clients := client.New(clientStore, postgres.NewAPIKeys(pool))
 
 	// The resolver caches what decisions need (ADR 0005). Writes through
-	// the policy service drop changes from it directly and publish them
-	// for the other instances; the subscriber applies theirs here.
+	// the policy and client services drop changes from it directly and
+	// publish them for the other instances; the subscriber applies theirs
+	// here.
 	resolver := policy.NewResolver(clientStore, policyStore)
-	policies := policy.New(policyStore, postgres.NewEndpointRules(pool), clientStore,
-		policy.NewBroadcaster(rdb, resolver, logger))
+	broadcaster := policy.NewBroadcaster(rdb, resolver, logger)
+	clients := client.New(clientStore, postgres.NewAPIKeys(pool), broadcaster)
+	policies := policy.New(policyStore, postgres.NewEndpointRules(pool), clientStore, broadcaster)
 	// The subscriber stops on SIGINT/SIGTERM like everything else, and on
 	// any early return; the deferred wait runs before the Redis client
 	// closes, so it never outlives the connection it uses.

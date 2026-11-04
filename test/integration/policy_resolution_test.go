@@ -43,8 +43,9 @@ func newInstance(t *testing.T, pool *pgxpool.Pool, redisURL string) *instance {
 	rdb := newRedisClient(t, redisURL)
 
 	resolver := policy.NewResolver(clientStore, policyStore, policy.WithTTL(time.Hour))
-	policies := policy.New(policyStore, postgres.NewEndpointRules(pool), clientStore, policy.NewBroadcaster(rdb, resolver, logger))
-	clients := client.New(clientStore, postgres.NewAPIKeys(pool))
+	broadcaster := policy.NewBroadcaster(rdb, resolver, logger)
+	policies := policy.New(policyStore, postgres.NewEndpointRules(pool), clientStore, broadcaster)
+	clients := client.New(clientStore, postgres.NewAPIKeys(pool), broadcaster)
 	runSubscriber(t, rdb, &observed{inner: resolver})
 
 	admin := httptest.NewServer(httptransport.NewRouter(httptransport.Deps{

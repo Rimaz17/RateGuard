@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"regexp"
@@ -18,9 +19,15 @@ import (
 
 var fullKeyShape = regexp.MustCompile(`^rg_[a-z0-9]{1,3}_[a-z2-7]{16}_[a-z2-7]{52}$`)
 
+// newClientService builds the service for tests that run one instance with
+// no key cache, so revocation notices have nowhere to go.
 func newClientService(pool *pgxpool.Pool) *client.Service {
-	return client.New(postgres.NewClients(pool), postgres.NewAPIKeys(pool))
+	return client.New(postgres.NewClients(pool), postgres.NewAPIKeys(pool), discardNotices{})
 }
+
+type discardNotices struct{}
+
+func (discardNotices) NotifyClient(context.Context, string) {}
 
 func TestServiceRegisterIssuesAWorkingKey(t *testing.T) {
 	ctx := t.Context()
