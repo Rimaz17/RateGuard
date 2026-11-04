@@ -148,6 +148,22 @@ func (c *Cache[V]) Invalidate(key string) {
 	c.mu.Unlock()
 }
 
+// InvalidateFunc drops every entry for which drop reports true, for a change
+// that makes several entries stale at once, such as revoking one of a
+// client's keys. Like Invalidate, it also stops loads already in flight from
+// storing their results, since their keys and values are not known yet.
+// drop runs with the cache locked and must not call back into it.
+func (c *Cache[V]) InvalidateFunc(drop func(key string, value V) bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, it := range c.items {
+		if drop(key, it.value) {
+			delete(c.items, key)
+		}
+	}
+	c.epoch++
+}
+
 // Flush drops every entry, for when invalidations may have been missed.
 // Loads already in flight finish but do not store their results, and
 // callers that arrive afterwards do not join them.

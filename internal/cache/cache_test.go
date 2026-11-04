@@ -128,6 +128,45 @@ func TestFlushDropsEverything(t *testing.T) {
 	}
 }
 
+func TestInvalidateFuncDropsMatchingEntries(t *testing.T) {
+	src := newSource("a1", "client-a", "a2", "client-a", "b1", "client-b")
+	c := cache.New(time.Hour, time.Second, nil, src.load)
+	for _, k := range []string{"a1", "a2", "b1"} {
+		mustGet(t, c, k)
+	}
+
+	c.InvalidateFunc(func(_ string, owner string) bool { return owner == "client-a" })
+	for _, k := range []string{"a1", "a2", "b1"} {
+		mustGet(t, c, k)
+	}
+	// a1 and a2 were loaded again; b1 was still cached.
+	if n := src.reads.Load(); n != 5 {
+		t.Errorf("reads = %d, want 5: 3 to warm up and 1 each for a1 and a2", n)
+	}
+}
+
+func TestInvalidateFuncBeatsALoadInFlight(t *testing.T) {
+	g := newGate("stale")
+	c := cache.New(time.Hour, 5*time.Second, nil, g.load)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = c.Get(t.Context(), "a")
+	}()
+	<-g.started
+	// Nothing is cached yet, so no entry matches; the load in flight must
+	// still not store what it read before the change.
+	c.InvalidateFunc(func(string, string) bool { return true })
+	g.value.Store("fresh")
+	close(g.release)
+	<-done
+
+	if got := mustGet(t, c, "a"); got != "fresh" {
+		t.Errorf("Get = %q, want fresh: the in-flight load cached its stale value", got)
+	}
+}
+
 func TestErrorsAreNotCached(t *testing.T) {
 	src := newSource("a", "1")
 	src.err = errors.New("database down")
