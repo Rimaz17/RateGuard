@@ -8,9 +8,9 @@ bucket shared across every RateGuard instance through Redis. Rate limiting lives
 service instead of being re-implemented in every application, and any language that can
 make an HTTP call can use it.
 
-> **Status: phase 0 (foundations).** The service builds, runs in Docker Compose next to
-> Postgres and Redis, and serves `GET /healthz`. Rate limiting itself is not implemented
-> yet.
+> **Status: phase 1 (persistence).** The service runs in Docker Compose next to Postgres
+> and Redis, applies its schema migrations, and serves `GET /healthz` and `GET /readyz`.
+> Rate limiting itself is not implemented yet.
 
 ## Architecture
 
@@ -43,13 +43,15 @@ build or test outside Docker.
 ```bash
 git clone https://github.com/Rimaz17/RateGuard.git
 cd RateGuard
-make up      # creates .env from configs/.env.example, builds, starts, waits for health checks
-make smoke   # GET /healthz, expects 200 {"status":"ok"}
+make up      # creates .env, builds, applies migrations, starts, waits for health checks
+make smoke   # GET /healthz and GET /readyz, expects 200 from both
 make down
 ```
 
 `make up` binds RateGuard to `127.0.0.1:8080`, Postgres to `127.0.0.1:5433` and Redis to
-`127.0.0.1:6379`. To change the host ports, edit `.env`.
+`127.0.0.1:6379`. To change the host ports, edit `.env`. A one-shot `migrate` service
+applies the schema before RateGuard starts
+([ADR 0007](docs/adr/0007-migrations-run-as-a-separate-step.md)).
 
 Without `make` (on Windows, for example), run the equivalent commands directly:
 
@@ -57,6 +59,7 @@ Without `make` (on Windows, for example), run the equivalent commands directly:
 cp configs/.env.example .env
 docker compose up -d --build --wait
 curl -i http://127.0.0.1:8080/healthz
+curl -i http://127.0.0.1:8080/readyz
 ```
 
 ## Configuration
@@ -74,6 +77,12 @@ ones that only Docker Compose reads.
 | `RG_HTTP_IDLE_TIMEOUT` | `120s` | Keep-alive idle timeout |
 | `RG_SHUTDOWN_TIMEOUT` | `15s` | Grace period for in-flight requests on SIGINT/SIGTERM |
 | `RG_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `RG_DATABASE_URL` | *(required)* | PostgreSQL connection string; treated as a secret and never logged |
+| `RG_DATABASE_MAX_CONNS` | `10` | Connection pool size (at least 1) |
+| `RG_DATABASE_MAX_CONN_LIFETIME` | `30m` | Recycle pooled connections after this long |
+| `RG_DATABASE_MAX_CONN_IDLE_TIME` | `5m` | Close pooled connections idle for this long |
+| `RG_REDIS_URL` | `redis://localhost:6379/0` | Redis URL; treated as a secret and never logged |
+| `RG_READINESS_TIMEOUT` | `2s` | Per-dependency timeout for the `/readyz` checks |
 
 Every timeout must be positive. RateGuard exits at startup if any configuration value is
 invalid.
@@ -83,7 +92,7 @@ invalid.
 | Method and path | Purpose | Status |
 |---|---|---|
 | `GET /healthz` | Liveness: the process is up and serving | Available |
-| `GET /readyz` | Readiness: Postgres and Redis are reachable | Phase 1 |
+| `GET /readyz` | Readiness: Postgres and Redis are reachable (200, or 503 naming the one that is not) | Available |
 | `POST /v1/clients`, `GET /v1/clients`, `POST/DELETE /v1/clients/{id}/keys` | Client and API key management | Phase 2 |
 | `POST/PATCH/DELETE /v1/policies`, `PUT /v1/clients/{id}/policy` | Policy management | Phase 3 |
 | `POST /v1/check`, `POST /v1/peek` | Rate-limit decision | Phases 4–6 |
@@ -91,17 +100,48 @@ invalid.
 
 Every response carries an `X-Request-ID` header. An inbound `X-Request-ID` is reused if
 it is at most 64 characters of `[A-Za-z0-9._-]`; otherwise RateGuard generates a new one.
-An OpenAPI contract arrives in `api/openapi.yaml` with the first handler that needs one.
+The contract is [api/openapi.yaml](api/openapi.yaml) (OpenAPI 3.1), updated in the same
+commit as any handler.
+
+## Data model
+
+PostgreSQL holds the configuration: policies, clients and (from phase 2) their API
+keys. Redis holds only ephemeral bucket state. The schema lives in
+[`migrations/`](migrations) as reversible, numbered pairs.
+
+| Table | Holds |
+|---|---|
+| `policies` | Named rate limits: capacity, window, refill rate, enabled flag |
+| `clients` | Registered applications, their status and assigned policy |
+
+Column-level detail and the conventions behind it are in
+[docs/data-model.md](docs/data-model.md).
 
 ## Development
 
 ```bash
-make help        # list every target
-make check       # gofmt check, go vet, golangci-lint, go test -race: run before committing
-make test        # unit tests with the race detector
-make lint-docker # the pinned golangci-lint in Docker, if it is not installed locally
-make run         # run on the host with the current environment
+make help             # list every target
+make check            # gofmt check, go vet, golangci-lint, go test -race: run before committing
+make test             # unit tests with the race detector
+make test-integration # testcontainers suite against real Postgres and Redis (needs Docker)
+make lint-docker      # the pinned golangci-lint in Docker, if it is not installed locally
+make run              # run on the host with the current environment
 ```
+
+### Migrations
+
+The schema lives in [`migrations/`](migrations) as numbered `.up.sql` / `.down.sql`
+pairs, embedded in the binary. Against the compose database:
+
+```bash
+make migrate-version     # current schema version
+make migrate-down        # revert the last migration (N=3 for three)
+make migrate-up          # apply everything pending
+```
+
+Outside Compose, run the binary directly: `rateguard migrate up | down [N] | version`,
+with `RG_DATABASE_URL` set. An applied migration is never edited; changes go in a new
+pair.
 
 The race detector needs cgo. On a machine without a C toolchain, run the tests in the Go
 image:
@@ -110,21 +150,31 @@ image:
 docker run --rm -v "$PWD:/src" -w /src golang:1.27.3 go test -race ./...
 ```
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the format, vet, lint and
-race-test checks, builds the image, and runs `make up` with `make smoke` on every push
-and pull request.
+The integration suite starts its own containers with testcontainers-go, so it needs a
+reachable Docker daemon. When running it inside a container on Docker Desktop, mount the
+Docker socket and set `TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal`.
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every push and pull
+request: format, vet, lint and race-tested unit tests; the integration suite, which
+includes a migrations up/down/up round trip on a fresh database; and an image build
+followed by `make up`, `make smoke`, a migrate down and up through the binary, and a
+check that `/readyz` turns 503 when Postgres stops and 200 when it returns.
 
 ### Layout
 
 ```
-cmd/rateguard/          composition root: wiring only
-internal/config/        environment configuration and validation
-internal/transport/http chi router, handlers and middleware (package httptransport)
-docs/adr/               architecture decision records
+cmd/rateguard/            composition root: wiring and the migrate subcommand
+internal/config/          environment configuration and validation
+internal/domain/          entities and sentinel errors; standard library only
+internal/storage/postgres pgx pool, repositories and the migrator
+internal/transport/http   chi router, handlers and middleware (package httptransport)
+migrations/               numbered SQL migrations, embedded in the binary
+api/openapi.yaml          the HTTP contract
+test/integration/         testcontainers suite (build tag: integration)
+docs/                     data model and architecture decision records
 ```
 
-Later phases add `internal/domain`, `limiter`, `policy`, `client`, `analytics` and
-`storage/postgres`, plus `migrations/` and `api/openapi.yaml`.
+Later phases add `internal/limiter`, `policy`, `client` and `analytics`.
 
 ## Performance
 

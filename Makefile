@@ -7,6 +7,9 @@ IMAGE                 := rateguard:dev
 GOLANGCI_LINT_VERSION := v2.15.0
 RATEGUARD_HOST_PORT   ?= 8080
 HEALTHZ_URL           ?= http://127.0.0.1:$(RATEGUARD_HOST_PORT)/healthz
+READYZ_URL            ?= http://127.0.0.1:$(RATEGUARD_HOST_PORT)/readyz
+# Steps for `make migrate-down`.
+N                     ?= 1
 
 .DEFAULT_GOAL := help
 
@@ -21,7 +24,7 @@ help: ## List targets
 	@echo "created .env from configs/.env.example"
 
 .PHONY: up
-up: .env ## Build and start RateGuard, Postgres and Redis; wait until healthy
+up: .env ## Build and start the stack, apply migrations, wait until healthy
 	docker compose up -d --build --wait
 
 .PHONY: down
@@ -33,8 +36,23 @@ logs: ## Follow logs from every service
 	docker compose logs -f
 
 .PHONY: smoke
-smoke: ## Check that /healthz on the running stack returns 200
+smoke: ## Check that /healthz and /readyz on the running stack return 200
 	curl -fsS --retry 10 --retry-connrefused --retry-delay 1 $(HEALTHZ_URL)
+	curl -fsS --retry 10 --retry-all-errors --retry-delay 1 $(READYZ_URL)
+
+## --- Migrations ---------------------------------------------------------------
+
+.PHONY: migrate-up
+migrate-up: .env ## Apply every pending migration to the compose database
+	docker compose run --rm migrate migrate up
+
+.PHONY: migrate-down
+migrate-down: .env ## Revert the last N migrations (default 1) on the compose database
+	docker compose run --rm migrate migrate down $(N)
+
+.PHONY: migrate-version
+migrate-version: .env ## Print the compose database's schema version
+	docker compose run --rm migrate migrate version
 
 ## --- Go ---------------------------------------------------------------------
 
@@ -50,6 +68,10 @@ run: ## Run the service on the host using the current environment
 test: ## Run unit tests with the race detector
 	go test -race ./...
 
+.PHONY: test-integration
+test-integration: ## Run the testcontainers suite with the race detector (needs Docker)
+	go test -race -tags integration ./test/integration/...
+
 .PHONY: cover
 cover: ## Run tests with the race detector and write coverage.out
 	go test -race -coverprofile=coverage.out ./...
@@ -64,8 +86,9 @@ fmt-check: ## Fail if any Go file is not gofmt-clean
 	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
 .PHONY: vet
-vet: ## Run go vet
+vet: ## Run go vet, including the integration suite
 	go vet ./...
+	go vet -tags integration ./...
 
 .PHONY: lint
 lint: ## Run golangci-lint (must be installed locally)

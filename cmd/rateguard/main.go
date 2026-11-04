@@ -1,75 +1,40 @@
 // Command rateguard runs the RateGuard rate-limiting service.
 //
+// With no arguments it serves HTTP until SIGINT or SIGTERM. The migrate
+// subcommand applies or reverts the schema migrations embedded in the
+// binary:
+//
+//	rateguard migrate up         apply every pending migration
+//	rateguard migrate down [N]   revert the last N migrations (default 1)
+//	rateguard migrate version    print the current schema version
+//
 // main is the composition root: it loads configuration, constructs
-// dependencies, starts the HTTP server and shuts it down gracefully on
-// SIGINT or SIGTERM. It holds no business logic.
+// dependencies and wires them together. It holds no business logic.
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
-
-	"github.com/Rimaz17/RateGuard/internal/config"
-	httptransport "github.com/Rimaz17/RateGuard/internal/transport/http"
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args[1:]); err != nil {
 		slog.New(slog.NewJSONHandler(os.Stderr, nil)).Error("rateguard exited", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+func run(args []string) error {
+	if len(args) == 0 {
+		return serve()
 	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httptransport.NewRouter(logger),
-		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
-		ReadTimeout:       cfg.HTTPReadTimeout,
-		WriteTimeout:      cfg.HTTPWriteTimeout,
-		IdleTimeout:       cfg.HTTPIdleTimeout,
-		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+	if args[0] == "migrate" {
+		cmd, err := parseMigrateArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return runMigrate(cmd)
 	}
-
-	serveErr := make(chan error, 1)
-	go func() {
-		logger.Info("http server listening", slog.String("addr", cfg.HTTPAddr))
-		serveErr <- srv.ListenAndServe()
-	}()
-
-	select {
-	case err := <-serveErr:
-		return fmt.Errorf("http server: %w", err)
-	case <-ctx.Done():
-	}
-
-	logger.Info("shutting down", slog.String("timeout", cfg.ShutdownTimeout.String()))
-	// The signal context is already cancelled, so the drain deadline needs a
-	// fresh root; this is main, the one place that may create one.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutting down http server: %w", err)
-	}
-	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("http server: %w", err)
-	}
-	logger.Info("stopped")
-	return nil
+	return fmt.Errorf("unknown command %q: run with no arguments to serve, or use %q", args[0], migrateUsage)
 }

@@ -6,14 +6,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	httptransport "github.com/Rimaz17/RateGuard/internal/transport/http"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	logger := slog.New(slog.DiscardHandler)
-	srv := httptest.NewServer(httptransport.NewRouter(logger))
+	srv := httptest.NewServer(httptransport.NewRouter(httptransport.Deps{
+		Logger:           slog.New(slog.DiscardHandler),
+		ReadinessTimeout: time.Second,
+	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -47,6 +50,9 @@ func TestHealthz(t *testing.T) {
 	if body["status"] != "ok" {
 		t.Errorf("body status = %q, want %q", body["status"], "ok")
 	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
 }
 
 func TestRoutingMisses(t *testing.T) {
@@ -58,6 +64,7 @@ func TestRoutingMisses(t *testing.T) {
 	}{
 		{"unknown path", http.MethodGet, "/nope", http.StatusNotFound},
 		{"wrong method on healthz", http.MethodPost, "/healthz", http.StatusMethodNotAllowed},
+		{"wrong method on readyz", http.MethodDelete, "/readyz", http.StatusMethodNotAllowed},
 	}
 	srv := newTestServer(t)
 	for _, tt := range tests {
