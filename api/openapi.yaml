@@ -179,6 +179,52 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/clients/{clientID}/policy:
+    parameters:
+      - $ref: "#/components/parameters/ClientID"
+    put:
+      tags: [clients, policies]
+      operationId: assignClientPolicy
+      summary: Assign a policy to a client
+      description: |
+        Puts the client on a policy, or with `"policy_id": null` takes it off
+        any policy so it falls back to the default. The field is required, so
+        an empty body cannot remove a plan by accident. A disabled policy
+        cannot be assigned. The change reaches every RateGuard instance within
+        milliseconds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignPolicyRequest"
+      responses:
+        "200":
+          description: The client, with its new policy.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such client, or no such policy. The message says which.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /v1/clients/{clientID}/keys:
     parameters:
       - $ref: "#/components/parameters/ClientID"
@@ -756,6 +802,15 @@ components:
         refill_rate: {type: number, exclusiveMinimum: 0, maximum: 1000000000}
         enabled: {type: boolean}
         default: {type: boolean}
+    AssignPolicyRequest:
+      type: object
+      required: [policy_id]
+      additionalProperties: false
+      properties:
+        policy_id:
+          type: [string, "null"]
+          format: uuid
+          description: The policy to assign, or null to remove the client's policy.
     EndpointRule:
       type: object
       required: [id, policy_id, method, path_pattern, capacity, window_seconds, created_at]

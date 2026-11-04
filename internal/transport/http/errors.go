@@ -27,6 +27,8 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 		writeError(w, r, http.StatusNotFound, "policy not found")
 	case errors.Is(err, domain.ErrPolicyNameTaken):
 		writeError(w, r, http.StatusConflict, "another policy already has this name")
+	case errors.Is(err, domain.ErrPolicyDisabled):
+		writeError(w, r, http.StatusConflict, "policy is disabled; enable it before assigning it")
 	case errors.Is(err, domain.ErrEndpointRuleNotFound):
 		writeError(w, r, http.StatusNotFound, "endpoint rule not found")
 	case errors.Is(err, domain.ErrEndpointRuleExists):

@@ -141,6 +141,7 @@ func TestWriteServiceError(t *testing.T) {
 		{fmt.Errorf("issuing key: %w", domain.ErrActiveKeyLimit), http.StatusConflict, "revoke one before issuing another"},
 		{fmt.Errorf("getting policy: %w", domain.ErrPolicyNotFound), http.StatusNotFound, "policy not found"},
 		{fmt.Errorf("creating policy: %w", domain.ErrPolicyNameTaken), http.StatusConflict, "another policy already has this name"},
+		{fmt.Errorf("assigning policy: %w", domain.ErrPolicyDisabled), http.StatusConflict, "enable it before assigning it"},
 		{fmt.Errorf("deleting endpoint rule: %w", domain.ErrEndpointRuleNotFound), http.StatusNotFound, "endpoint rule not found"},
 		{fmt.Errorf("creating endpoint rule: %w", domain.ErrEndpointRuleExists), http.StatusConflict, "already has a rule for this method and path pattern"},
 		{fmt.Errorf("creating endpoint rule: %w", domain.ErrEndpointRuleLimit), http.StatusConflict, "already has 100 endpoint rules"},

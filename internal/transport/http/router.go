@@ -41,6 +41,10 @@ type Deps struct {
 	// Rules serves /v1/policies/{policyID}/rules. It is mounted only
 	// alongside Policies.
 	Rules RuleManager
+
+	// Assigner serves PUT /v1/clients/{clientID}/policy. It is mounted only
+	// alongside Clients.
+	Assigner PolicyAssigner
 }
 
 // NewRouter builds the HTTP handler for the whole service.
@@ -64,6 +68,10 @@ func NewRouter(d Deps) http.Handler {
 				r.Get("/{clientID}/keys", kh.list)
 				r.Post("/{clientID}/keys", kh.issue)
 				r.Delete("/{clientID}/keys/{keyID}", kh.revoke)
+			}
+			if d.Assigner != nil {
+				ah := assignHandlers{logger: d.Logger, assigner: d.Assigner}
+				r.Put("/{clientID}/policy", ah.assign)
 			}
 		})
 	}
