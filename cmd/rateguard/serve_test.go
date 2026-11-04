@@ -24,6 +24,21 @@ func TestNewRedisClient(t *testing.T) {
 	}
 }
 
+func TestNewRedisClientNeverRetries(t *testing.T) {
+	// Even a URL asking for retries gets none: a retried bucket script can
+	// take a token twice (ADR 0013). go-redis stores "disabled" as 0.
+	for _, url := range []string{"redis://cache:6379/0", "redis://cache:6379/0?max_retries=5"} {
+		rdb, err := newRedisClient(url)
+		if err != nil {
+			t.Fatalf("newRedisClient(%q): %v", url, err)
+		}
+		if n := rdb.Options().MaxRetries; n != 0 {
+			t.Errorf("newRedisClient(%q): MaxRetries = %d, want 0 (disabled)", url, n)
+		}
+		_ = rdb.Close()
+	}
+}
+
 func TestNewRedisClientInvalidURLDoesNotLeakPassword(t *testing.T) {
 	for _, url := range []string{"http://:hunter2@cache:6379", "redis://:hunter2@cache:6379/notadb", "redis://:hunter2@[::1"} {
 		_, err := newRedisClient(url)

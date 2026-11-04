@@ -144,8 +144,13 @@ func newRedisClient(url string) (*redis.Client, error) {
 		return nil, errors.New("RG_REDIS_URL is not a valid redis:// or rediss:// URL")
 	}
 	// Without this, go-redis applies its own read and write timeouts and
-	// ignores context deadlines, so the readiness timeout would not bind.
+	// ignores context deadlines, so neither the readiness timeout nor the
+	// decision timeout would bind.
 	opts.ContextTimeoutEnabled = true
+	// A retried bucket script whose first reply was lost would take a second
+	// token, and retries delay the circuit breaker. A failed call is a
+	// failure (ADR 0013); this overrides any max_retries in the URL.
+	opts.MaxRetries = -1
 	return redis.NewClient(opts), nil
 }
 
