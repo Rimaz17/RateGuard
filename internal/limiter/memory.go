@@ -9,8 +9,7 @@ import (
 
 // Store keeps buckets and applies the engine to them atomically, so that
 // concurrent requests for one key each see the state the previous one left.
-// Memory satisfies it in process; the Redis store of phase 5 will satisfy it
-// across instances.
+// Memory satisfies it in process, and Redis across instances.
 type Store interface {
 	// Take takes one token from the bucket at key, refilling it first.
 	Take(ctx context.Context, key string, l Limit) (Decision, error)
