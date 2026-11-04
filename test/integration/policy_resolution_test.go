@@ -33,8 +33,8 @@ type instance struct {
 }
 
 // newInstance starts an instance on the shared database and Redis. Its
-// cache TTL is an hour, so anything it notices within the test came over
-// pub/sub, not from expiry.
+// policy and API key caches live for an hour, so anything it notices within
+// the test came over pub/sub, not from expiry.
 func newInstance(t *testing.T, pool *pgxpool.Pool, redisURL string) *instance {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
@@ -43,10 +43,12 @@ func newInstance(t *testing.T, pool *pgxpool.Pool, redisURL string) *instance {
 	rdb := newRedisClient(t, redisURL)
 
 	resolver := policy.NewResolver(clientStore, policyStore, policy.WithTTL(time.Hour))
-	broadcaster := policy.NewBroadcaster(rdb, resolver, logger)
+	keys := client.NewKeyCache(postgres.NewAPIKeys(pool), time.Hour)
+	caches := policy.Invalidators{resolver, policy.ClientChanges(keys)}
+	broadcaster := policy.NewBroadcaster(rdb, caches, logger)
 	policies := policy.New(policyStore, postgres.NewEndpointRules(pool), clientStore, broadcaster)
 	clients := client.New(clientStore, postgres.NewAPIKeys(pool), broadcaster)
-	runSubscriber(t, rdb, &observed{inner: resolver})
+	runSubscriber(t, rdb, &observed{inner: caches})
 
 	admin := httptest.NewServer(httptransport.NewRouter(httptransport.Deps{
 		Logger:           logger,
@@ -60,7 +62,7 @@ func newInstance(t *testing.T, pool *pgxpool.Pool, redisURL string) *instance {
 	}))
 	t.Cleanup(admin.Close)
 
-	auth := client.NewAuthenticator(postgres.NewAPIKeys(pool))
+	auth := client.NewAuthenticator(keys)
 	app := httptest.NewServer(httptransport.Identify(logger, auth, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := httptransport.IdentityFromContext(r.Context())
 		limit, err := resolver.Resolve(r.Context(), id, r.Method, r.URL.Path)
