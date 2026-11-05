@@ -24,11 +24,15 @@ const (
 
 // Decider makes rate-limit decisions. *limiter.Service satisfies it.
 type Decider interface {
+	// Check decides a request and takes a token if it is allowed.
 	Check(ctx context.Context, id domain.Identity, method, requestPath string) (limiter.Decision, error)
+
+	// Peek reports what Check would decide, taking nothing.
+	Peek(ctx context.Context, id domain.Identity, method, requestPath string) (limiter.Decision, error)
 }
 
-// checkRequest is the body of POST /v1/check: the request the application
-// received and wants a decision on.
+// checkRequest is the body of POST /v1/check and POST /v1/peek: the request
+// the application received and wants a decision on.
 type checkRequest struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`
@@ -49,9 +53,26 @@ type decisionHandlers struct {
 	decider Decider
 }
 
-// check handles POST /v1/check. It runs behind Identify, so the caller is
-// already known. Nothing here logs unless the decision fails (ADR 0004).
+// check handles POST /v1/check: 200 or 429 (ADR 0015).
 func (h decisionHandlers) check(w http.ResponseWriter, r *http.Request) {
+	h.decide(w, r, h.decider.Check, writeDecision)
+}
+
+// peek handles POST /v1/peek: always 200 when a decision could be made,
+// with allowed saying what a check would do, and no Retry-After since
+// nothing was refused (ADR 0016).
+func (h decisionHandlers) peek(w http.ResponseWriter, r *http.Request) {
+	h.decide(w, r, h.decider.Peek, func(w http.ResponseWriter, d limiter.Decision) {
+		writeDecisionBody(w, http.StatusOK, toDecisionDTO(d))
+	})
+}
+
+// decideFunc is Decider.Check or Decider.Peek.
+type decideFunc func(ctx context.Context, id domain.Identity, method, requestPath string) (limiter.Decision, error)
+
+// decide runs one decision request. It runs behind Identify, so the caller
+// is already known. Nothing here logs unless the decision fails (ADR 0004).
+func (h decisionHandlers) decide(w http.ResponseWriter, r *http.Request, decide decideFunc, write func(http.ResponseWriter, limiter.Decision)) {
 	var req checkRequest
 	if e := decodeJSONLimit(w, r, &req, maxCheckBodyBytes); e != nil {
 		writeError(w, r, e.status, e.message)
@@ -67,10 +88,10 @@ func (h decisionHandlers) check(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d, err := h.decider.Check(r.Context(), id, req.Method, req.Path)
+	d, err := decide(r.Context(), id, req.Method, req.Path)
 	switch {
 	case err == nil:
-		writeDecision(w, d)
+		write(w, d)
 	case errors.Is(err, domain.ErrNoPolicy):
 		writeError(w, r, http.StatusForbidden, "no rate-limit policy applies to this caller")
 	case r.Context().Err() != nil:

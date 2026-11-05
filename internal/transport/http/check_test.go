@@ -38,6 +38,14 @@ func (s *stubDecider) Check(_ context.Context, id domain.Identity, method, path 
 	return s.decision, s.err
 }
 
+func (s *stubDecider) Peek(_ context.Context, id domain.Identity, method, path string) (limiter.Decision, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.asked = append(s.asked, "peek "+method+" "+path)
+	s.ids = append(s.ids, id)
+	return s.decision, s.err
+}
+
 type checkServer struct {
 	srv     *httptest.Server
 	decider *stubDecider
@@ -64,7 +72,12 @@ type reply struct {
 
 func (c *checkServer) post(t *testing.T, key, body string) (reply, []byte) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.srv.URL+"/v1/check", strings.NewReader(body))
+	return c.postTo(t, "/v1/check", key, body)
+}
+
+func (c *checkServer) postTo(t *testing.T, path, key, body string) (reply, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.srv.URL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,6 +305,50 @@ func TestCheckLogsNothingForDecisions(t *testing.T) {
 		if c.logs.Len() != 0 {
 			t.Errorf("%s decision logged %q; the hot path must not log (ADR 0004)", name, c.logs.String())
 		}
+	}
+}
+
+func TestPeekReportsWithoutTaking(t *testing.T) {
+	c := newCheckServer(t, &stubDecider{decision: limiter.Decision{Allowed: true, Limit: 100, Remaining: 40, ResetAfter: 36 * time.Second}})
+	resp, body := c.postTo(t, "/v1/peek", validKey, productsBody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d %s, want 200", resp.StatusCode, body)
+	}
+	if got := strings.TrimSpace(string(body)); got != `{"allowed":true,"limit":100,"remaining":40,"reset_after":36}` {
+		t.Errorf("body = %s", got)
+	}
+	if resp.Header.Get("X-RateLimit-Remaining") != "40" || resp.Header.Get("X-RateLimit-Reset") != "36" {
+		t.Errorf("headers = %v, want the X-RateLimit-* headers", resp.Header)
+	}
+	if len(c.decider.asked) != 1 || c.decider.asked[0] != "peek GET /api/products" {
+		t.Errorf("decider was asked %v, want one peek and no check", c.decider.asked)
+	}
+}
+
+func TestPeekOfAnEmptyBucketIsStill200(t *testing.T) {
+	c := newCheckServer(t, &stubDecider{decision: limiter.Decision{Allowed: false, Limit: 100, ResetAfter: time.Minute, RetryAfter: 600 * time.Millisecond}})
+	resp, body := c.postTo(t, "/v1/peek", validKey, productsBody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d %s, want 200: the peek succeeded, nothing was refused", resp.StatusCode, body)
+	}
+	if got := strings.TrimSpace(string(body)); got != `{"allowed":false,"limit":100,"remaining":0,"reset_after":60,"retry_after":1}` {
+		t.Errorf("body = %s, want allowed false with retry_after", got)
+	}
+	if v := resp.Header.Get("Retry-After"); v != "" {
+		t.Errorf("Retry-After = %q on a peek, want none (ADR 0016)", v)
+	}
+}
+
+func TestPeekSharesTheCheckContract(t *testing.T) {
+	c := newCheckServer(t, &stubDecider{err: domain.ErrNoPolicy})
+	if resp, _ := c.postTo(t, "/v1/peek", validKey, productsBody); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("peek with no policy = %d, want 403", resp.StatusCode)
+	}
+	if resp, _ := c.postTo(t, "/v1/peek", validKey, `{"method":"GET","path":"/a?b"}`); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("peek with a query string = %d, want 400", resp.StatusCode)
+	}
+	if resp, _ := c.postTo(t, "/v1/peek", "rg_cus_aaaaaaaaaaaaaaaa_"+strings.Repeat("z", 52), productsBody); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("peek with a bad key = %d, want 401", resp.StatusCode)
 	}
 }
 

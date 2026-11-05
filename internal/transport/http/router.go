@@ -50,10 +50,10 @@ type Deps struct {
 	// alongside Clients.
 	Assigner PolicyAssigner
 
-	// Decider serves POST /v1/check, the hot path. It is mounted only when
-	// Authenticator is set too, which identifies callers by API key;
-	// callers without one are identified by IP, trusting X-Forwarded-For
-	// only from TrustedProxies.
+	// Decider serves POST /v1/check and /v1/peek, the hot path. They are
+	// mounted only when Authenticator is set too, which identifies callers
+	// by API key; callers without one are identified by IP, trusting
+	// X-Forwarded-For only from TrustedProxies.
 	Decider        Decider
 	Authenticator  Authenticator
 	TrustedProxies TrustedProxies
@@ -75,7 +75,9 @@ func NewRouter(d Deps) http.Handler {
 
 	if d.Decider != nil && d.Authenticator != nil {
 		dh := decisionHandlers{logger: d.Logger, decider: d.Decider}
-		r.With(Identify(d.Logger, d.Authenticator, d.TrustedProxies)).Post("/v1/check", dh.check)
+		identify := Identify(d.Logger, d.Authenticator, d.TrustedProxies)
+		r.With(identify).Post("/v1/check", dh.check)
+		r.With(identify).Post("/v1/peek", dh.peek)
 	}
 
 	if d.Clients != nil {

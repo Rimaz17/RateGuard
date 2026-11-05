@@ -188,6 +188,65 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/peek:
+    post:
+      tags: [decisions]
+      operationId: peek
+      summary: Report the allowance without consuming a token
+      description: |
+        Takes the same body and identifies the caller the same way as
+        `/v1/check`, but takes no token and never creates a bucket
+        (ADR 0016). It answers 200 whatever the outcome: `allowed` says
+        whether a check now would be allowed, `remaining` counts the tokens
+        a check would start from, and `retry_after` is present when
+        `allowed` is false. Errors are those of `/v1/check`.
+      security:
+        - {}
+        - callerKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CheckRequest"}
+            example: {method: GET, path: /api/products}
+      responses:
+        "200":
+          description: The allowance. Nothing was taken.
+          headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/RateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/RateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/RateLimitReset"
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Decision"}
+              examples:
+                available:
+                  value: {allowed: true, limit: 100, remaining: 40, reset_after: 36}
+                empty:
+                  value: {allowed: false, limit: 100, remaining: 0, reset_after: 60, retry_after: 1}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/InvalidAPIKey"
+        "403":
+          description: The caller's client is disabled, or no enabled policy applies to the caller.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "413":
+          description: The body is larger than 4 KiB.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /v1/clients:
     post:
       tags: [clients]
