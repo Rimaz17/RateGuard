@@ -25,6 +25,7 @@ decision itself and its consequences. ADRs 0001–0006 are the six binding decis
 | [0017](0017-unix-socket-for-sidecars.md) | A Unix socket for sidecar deployment |
 | [0018](0018-usage-analytics-pipeline.md) | Usage analytics: counted in memory, flushed to Redis, rolled up to Postgres |
 | [0019](0019-decision-and-cache-metrics.md) | Decision outcome, latency and cache metrics |
+| [0020](0020-how-latency-and-the-key-ceiling-are-measured.md) | How latency and the per-key ceiling are measured |
 
 New ADRs take the next number. To change an accepted ADR, mark it superseded and write
 a new one rather than editing it in place.
