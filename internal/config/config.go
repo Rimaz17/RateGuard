@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -15,6 +16,10 @@ import (
 // MinAdminTokenLen is the shortest admin token accepted. 32 characters of
 // `openssl rand -hex 32` output carry 128 bits.
 const MinAdminTokenLen = 32
+
+// MaxUnixSocketPathLen is the longest RG_UNIX_SOCKET accepted: the space
+// for a socket path on macOS and the BSDs, a little less than Linux's.
+const MaxUnixSocketPathLen = 104
 
 // Config is the complete runtime configuration for one RateGuard instance.
 type Config struct {
@@ -49,6 +54,15 @@ type Config struct {
 	// Empty, the default, trusts no one: the header is client-controlled
 	// and would let any caller pick its own identity.
 	TrustedProxies Prefixes `env:"RG_TRUSTED_PROXIES"`
+
+	// UnixSocket is an absolute path to also serve HTTP on, for sidecar
+	// deployment (ADR 0017). Empty, the default, means no socket.
+	UnixSocket string `env:"RG_UNIX_SOCKET"`
+
+	// UnixSocketMode is the socket file's permission. Whoever can connect
+	// can choose the IP a keyless request counts against, so it stays
+	// tight by default: owner and group only.
+	UnixSocketMode FileMode `env:"RG_UNIX_SOCKET_MODE" envDefault:"0660"`
 
 	// InstanceCount is how many RateGuard instances share the traffic.
 	// While Redis is unreachable, each instance's local bucket holds
@@ -154,6 +168,12 @@ func (c Config) validate() error {
 	)
 	if n := len(c.AdminToken.Value()); n > 0 && n < MinAdminTokenLen {
 		errs = append(errs, fmt.Errorf("RG_ADMIN_TOKEN must be at least %d characters, got %d", MinAdminTokenLen, n))
+	}
+	if c.UnixSocket != "" && !filepath.IsAbs(c.UnixSocket) {
+		errs = append(errs, fmt.Errorf("RG_UNIX_SOCKET must be an absolute path, got %q", c.UnixSocket))
+	}
+	if n := len(c.UnixSocket); n > MaxUnixSocketPathLen {
+		errs = append(errs, fmt.Errorf("RG_UNIX_SOCKET must be at most %d bytes, got %d", MaxUnixSocketPathLen, n))
 	}
 	if c.InstanceCount < 1 {
 		errs = append(errs, fmt.Errorf("RG_INSTANCE_COUNT must be at least 1, got %d", c.InstanceCount))
