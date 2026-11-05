@@ -170,6 +170,46 @@ jobs:
           cd examples/go-middleware
           RATEGUARD_URL="$base" RATEGUARD_API_KEY="$key" RATEGUARD_LIMIT=3 go test -race -count=1 -run TestE2E -v ./ | tee e2e.log
           grep -q -- '--- PASS: TestE2E' e2e.log
+      - name: usage analytics reach postgres through redis, and the phase 7 metrics are served
+        run: |
+          set -eu
+          base=http://127.0.0.1:8080
+          token="$(sed -n 's/^RG_ADMIN_TOKEN=//p' .env)"
+          reg="$(curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"name":"CI usage"}' "$base/v1/clients")"
+          client_id="$(echo "$reg" | sed -n 's/^{"client":{"id":"\([^"]*\)".*/\1/p')"
+          key="$(echo "$reg" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')"
+          for _ in 1 2 3; do
+            curl -fsS -o /dev/null -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d '{"method":"GET","path":"/"}' "$base/v1/check"
+          done
+          code="$(curl -s -o /dev/null -w '%{http_code}' "$base/v1/analytics/usage")"
+          echo "GET /v1/analytics/usage without a token: $code"
+          test "$code" = 401
+          # Flushed within a second, rolled up within ten.
+          for _ in $(seq 1 30); do
+            usage="$(curl -fsS -H "Authorization: Bearer $token" "$base/v1/analytics/usage?granularity=minute&top=100")"
+            if echo "$usage" | grep -q "\"client_id\":\"$client_id\",\"name\":\"CI usage\",\"requests\":3,\"allowed\":3,\"rejected\":0"; then
+              echo "$usage" | head -c 400; echo
+              break
+            fi
+            sleep 1
+          done
+          echo "$usage" | grep -q "\"client_id\":\"$client_id\",\"name\":\"CI usage\",\"requests\":3"
+          metrics="$(curl -fsS "$base/metrics")"
+          echo "$metrics" | grep -q '^rateguard_decisions_total{outcome="allowed"} '
+          echo "$metrics" | grep -q '^rateguard_decision_duration_seconds_count{operation="check"} '
+          echo "$metrics" | grep -q '^rateguard_cache_lookups_total{cache="api_key",result="hit"} '
+          echo "$metrics" | grep -qx 'rateguard_usage_dropped_total 0'
+      - name: k6 load scripts run against the stack (smoke, not a measurement)
+        run: |
+          set -eu
+          token="$(sed -n 's/^RG_ADMIN_TOKEN=//p' .env)"
+          for script in latency.js throughput.js; do
+            docker run --rm --network rateguard_default -v "$PWD/test/load:/scripts:ro" \
+              -e BASE_URL=http://rateguard:8080 -e ADMIN_TOKEN="$token" \
+              -e RATE=20 -e DURATION=3s -e WARMUP=1s -e CLIENTS=2 -e VUS=2 \
+              grafana/k6:1.4.2 run --quiet --no-color "/scripts/$script" | tee k6.log
+            grep -q 'status 200      100.00%' k6.log
+          done
       - name: migrate down one step and back up through the binary
         run: make migrate-down && make migrate-up
       - name: readiness flips when postgres stops, and recovers
