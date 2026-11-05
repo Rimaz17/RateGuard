@@ -1,6 +1,7 @@
 # Load tests
 
-The measurements behind the README's performance section
+The measurements behind [docs/performance.md](../../docs/performance.md) and the
+README's performance section
 ([ADR 0020](../../docs/adr/0020-how-latency-and-the-key-ceiling-are-measured.md)). Run
 all of them against the Compose stack with:
 
