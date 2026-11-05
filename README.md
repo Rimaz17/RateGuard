@@ -34,6 +34,31 @@ Your service returns `429 Too Many Requests` to its own client when RateGuard sa
 
 Every design decision is recorded in [docs/adr](docs/adr/README.md).
 
+## Tech stack
+
+| Area | Choice |
+|---|---|
+| Language | Go 1.27.3, pinned in `go.mod`, the Dockerfile and CI |
+| HTTP router | [chi](https://github.com/go-chi/chi) v5.5.0 |
+| Database | PostgreSQL 18.6, through [pgx](https://github.com/jackc/pgx) v5.12.0 and its `pgxpool` |
+| Migrations | [golang-migrate](https://github.com/golang-migrate/migrate) v4.20.1, embedded in the binary |
+| Shared state | Redis 8.10.3, through [go-redis](https://github.com/redis/go-redis) v9.23.0 |
+| Atomicity | Lua scripts run with `EVALSHA`: the token bucket, and the usage counts |
+| Circuit breaker | [sony/gobreaker](https://github.com/sony/gobreaker) v2.4.0 |
+| Cache stampede | [singleflight](https://pkg.go.dev/golang.org/x/sync/singleflight) from `golang.org/x/sync` v0.24.0 |
+| Configuration | Environment variables through [caarlos0/env](https://github.com/caarlos0/env) v11.4.2 |
+| Validation | [go-playground/validator](https://github.com/go-playground/validator) v10.30.6 |
+| Logging | `log/slog` from the standard library, as JSON |
+| Metrics | [Prometheus client_golang](https://github.com/prometheus/client_golang) v1.25.0 |
+| API contract | OpenAPI 3.1 ([api/openapi.yaml](api/openapi.yaml)), viewed in Swagger UI v5.32.0 |
+| Tests | The standard `testing` package with `-race`, and [testcontainers-go](https://github.com/testcontainers/testcontainers-go) v0.44.0 against real Postgres and Redis |
+| Lint | [golangci-lint](https://golangci-lint.run) v2.15.0 |
+| Load tests | [k6](https://k6.io) 1.4.2, plus a standard-library Go benchmark for the Unix socket |
+| Containers | Docker (a static binary on distroless `static-debian13`, running as non-root) and Docker Compose; nginx 1.29.3 balances the three-instance demo |
+| CI | GitHub Actions |
+
+The reference [Go middleware](examples/go-middleware) uses the standard library only.
+
 ## Quickstart
 
 Requirements: Docker with Compose v2, `make` and `curl`. Go 1.27.3 is needed only to
