@@ -54,8 +54,31 @@ type Resolver struct {
 type Option func(*options)
 
 type options struct {
-	ttl time.Duration
-	now func() time.Time
+	ttl     time.Duration
+	now     func() time.Time
+	observe func(name string) cache.Observer
+}
+
+// Names of the Resolver's caches, as WithCacheObserver is given them.
+const (
+	CacheClientPolicy  = "client_policy"
+	CachePolicy        = "policy"
+	CacheDefaultPolicy = "default_policy"
+)
+
+// WithCacheObserver reports every lookup in the Resolver's caches to the
+// observer observe returns for that cache's name: CacheClientPolicy,
+// CachePolicy or CacheDefaultPolicy.
+func WithCacheObserver(observe func(name string) cache.Observer) Option {
+	return func(o *options) { o.observe = observe }
+}
+
+// cacheOptions returns the options for the cache called name.
+func (o options) cacheOptions(name string) []cache.Option {
+	if o.observe == nil {
+		return nil
+	}
+	return []cache.Option{cache.WithObserver(o.observe(name))}
 }
 
 // WithTTL sets how long cached entries live. The default is DefaultTTL.
@@ -77,17 +100,17 @@ func NewResolver(clients Assignments, policies Catalog, opts ...Option) *Resolve
 		opt(&o)
 	}
 	return &Resolver{
-		clients: cache.New(o.ttl, defaultLoadTimeout, o.now, clients.PolicyID),
+		clients: cache.New(o.ttl, defaultLoadTimeout, o.now, clients.PolicyID, o.cacheOptions(CacheClientPolicy)...),
 		policies: cache.New(o.ttl, defaultLoadTimeout, o.now, func(ctx context.Context, id string) (*compiledPolicy, error) {
 			p, rules, err := policies.GetWithRules(ctx, id)
 			if err != nil {
 				return nil, err
 			}
 			return compile(p, rules)
-		}),
+		}, o.cacheOptions(CachePolicy)...),
 		defaults: cache.New(o.ttl, defaultLoadTimeout, o.now, func(ctx context.Context, _ string) (string, error) {
 			return policies.DefaultID(ctx)
-		}),
+		}, o.cacheOptions(CacheDefaultPolicy)...),
 	}
 }
 

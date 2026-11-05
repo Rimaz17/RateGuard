@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rimaz17/RateGuard/internal/cache"
 	"github.com/Rimaz17/RateGuard/internal/domain"
 	"github.com/Rimaz17/RateGuard/internal/policy"
 )
@@ -281,5 +282,59 @@ func waitUntil(t *testing.T, cond func() bool) {
 			t.Fatal("timed out waiting for a condition")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// lookups counts cache lookups by cache name.
+type lookups struct {
+	mu     sync.Mutex
+	counts map[string][2]int // [misses, hits]
+}
+
+func (l *lookups) observer(name string) cache.Observer {
+	return lookupFunc(func(hit bool) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		c := l.counts[name]
+		if hit {
+			c[1]++
+		} else {
+			c[0]++
+		}
+		l.counts[name] = c
+	})
+}
+
+type lookupFunc func(hit bool)
+
+func (f lookupFunc) Lookup(hit bool) { f(hit) }
+
+func TestResolverReportsEachCachesLookups(t *testing.T) {
+	s := plans()
+	l := &lookups{counts: map[string][2]int{}}
+	r := policy.NewResolver(s, s, policy.WithTTL(time.Hour), policy.WithCacheObserver(l.observer))
+
+	for range 3 {
+		mustResolve(t, r, keyed(merchantApp), http.MethodGet, "/")
+		mustResolve(t, r, anonymous, http.MethodGet, "/")
+	}
+
+	// A keyed caller looks up its client's policy ID, then that policy
+	// (Premium); an anonymous one the default ID, then the default policy
+	// (Free).
+	want := map[string][2]int{
+		policy.CacheClientPolicy:  {1, 2},
+		policy.CacheDefaultPolicy: {1, 2},
+		policy.CachePolicy:        {2, 4},
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for name, w := range want {
+		if got := l.counts[name]; got != w {
+			t.Errorf("%s: [misses hits] = %v, want %v", name, got, w)
+		}
+	}
+	if len(l.counts) != len(want) {
+		t.Errorf("caches observed: %v, want exactly %v", l.counts, want)
 	}
 }

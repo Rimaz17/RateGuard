@@ -61,6 +61,14 @@ type Deps struct {
 	Decider        Decider
 	Authenticator  Authenticator
 	TrustedProxies TrustedProxies
+
+	// DecisionTimer observes how long each decision request takes. It may
+	// be nil.
+	DecisionTimer DecisionTimer
+
+	// Usage serves GET /v1/analytics/usage. When nil, the route is not
+	// mounted.
+	Usage UsageReporter
 }
 
 // routeMethods are the methods a 405's Allow header can list.
@@ -115,8 +123,13 @@ func NewRouter(d Deps) http.Handler {
 	if d.Decider != nil && d.Authenticator != nil {
 		dh := decisionHandlers{logger: d.Logger, decider: d.Decider}
 		identify := Identify(d.Logger, d.Authenticator, d.TrustedProxies)
-		r.With(identify).Post("/v1/check", dh.check)
-		r.With(identify).Post("/v1/peek", dh.peek)
+		r.With(timeDecisions(d.DecisionTimer, opCheck), identify).Post("/v1/check", dh.check)
+		r.With(timeDecisions(d.DecisionTimer, opPeek), identify).Post("/v1/peek", dh.peek)
+	}
+
+	if d.Usage != nil {
+		uh := analyticsHandlers{logger: d.Logger, reporter: d.Usage}
+		r.With(AdminAuth(d.AdminToken)).Get("/v1/analytics/usage", uh.usage)
 	}
 
 	if d.Clients != nil {

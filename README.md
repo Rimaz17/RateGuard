@@ -8,39 +8,51 @@ bucket shared across every RateGuard instance through Redis. Rate limiting lives
 service instead of being re-implemented in every application, and any language that can
 make an HTTP call can use it.
 
-> **Status: phase 6 (response contract and integration).** The service runs in Docker
-> Compose next to Postgres and Redis, with an admin API to register applications, rotate
-> their API keys, and manage policies, endpoint rules and plan assignments.
-> `POST /v1/check` decides requests against token buckets shared by every instance
-> through an atomic Lua script in Redis, and answers with the standard `X-RateLimit-*`
-> and `Retry-After` headers. If Redis fails, a circuit breaker degrades decisions to a
-> local bucket per instance, never to unlimited, and `GET /metrics` shows it. RateGuard
-> can also run as a sidecar on a Unix socket, and a reference Go middleware integrates a
-> service in five lines. Usage analytics, the remaining metrics and the published latency
-> figures come in phase 7.
+> **Status: v1 complete (phase 7 of 7).** RateGuard runs in Docker Compose next to
+> Postgres and Redis. An admin API registers applications, rotates their API keys, and
+> manages policies, endpoint rules and plan assignments. `POST /v1/check` decides against
+> token buckets that every instance shares through an atomic Lua script in Redis, and
+> answers with the standard `X-RateLimit-*` and `Retry-After` headers. If Redis fails, a
+> circuit breaker degrades decisions to a local bucket per instance, never to unlimited.
+> Usage is counted off the hot path and reported by `GET /v1/analytics/usage`,
+> `GET /metrics` exposes decisions, latency, cache and Redis health, and the measured
+> latency of both topologies and the hot-key ceiling are [published below](#performance).
 
 ## Architecture
 
 ```
- client ──▶ your service ──POST /v1/check──▶ RateGuard (× N instances)
-                 ▲                              │  in-process policy cache
-                 └──── allowed / remaining ─────┤
-                                                ├──▶ Redis       bucket state (atomic Lua script),
-                                                │                policy invalidation pub/sub
-                                                └──▶ PostgreSQL  clients, API keys, policies,
-                                                                 usage rollups (admin path only)
+ client ──▶ your app ──POST /v1/check──▶ ┌─ RateGuard (× N, or a sidecar) ───────────┐
+               ▲                         │ 1. identify   API key cache, or client IP │
+               └──── 200 or 429 ─────────┤ 2. resolve    policy cache, 10s + pub/sub │
+                   + X-RateLimit-*       │ 3. take       one Lua script ─────────────┼──▶ Redis
+                                         │      (breaker: local bucket if Redis down)│      rg:bucket:*   token buckets
+                                         │ 4. count      in memory, no I/O           │      rg:usage:*    usage counts
+                                         ├────────── off the hot path ───────────────┤      rg:policy:invalidate
+                                         │ flusher, 1s   usage counts ───────────────┼──▶ Redis
+                                         │ rollup, 10s   Redis ──▶ usage_rollups ────┼──▶ PostgreSQL
+                                         │ admin API, GET /v1/analytics/usage ───────┼──▶   clients, api_keys,
+                                         │ /metrics  /healthz  /readyz               │      policies, endpoint_rules,
+                                         └───────────────────────────────────────────┘      usage_rollups
 ```
 
 Your service returns `429 Too Many Requests` to its own client when RateGuard says no.
 
-- **Hot path** (`/v1/check`): in-process policy cache, then one atomic Lua script in
-  Redis. No Postgres I/O and no synchronous logging or analytics
+- **Hot path** (`/v1/check`): the caller's key and policy come from in-process caches,
+  then one atomic Lua script runs in Redis. There is no Postgres I/O, no synchronous
+  logging and no analytics write; the check is only counted in memory
   ([ADR 0004](docs/adr/0004-the-hot-path-is-sacred.md)).
-- **Admin path** (`/v1/clients`, `/v1/policies`, `/v1/analytics`): Postgres-backed CRUD.
+- **Off the hot path**: usage counts move into Redis every second and into Postgres every
+  10 seconds ([ADR 0018](docs/adr/0018-usage-analytics-pipeline.md)).
+- **Admin path** (`/v1/clients`, `/v1/policies`, `/v1/analytics`): Postgres-backed and
+  guarded by an admin token.
 - **Redis outage**: a circuit breaker falls back to a local bucket, never to unlimited
   ([ADR 0001](docs/adr/0001-redis-failure-degrades-to-local-bucket.md)).
+- **Deployment**: one shared central service, or a sidecar next to each application on a
+  Unix socket ([ADR 0017](docs/adr/0017-unix-socket-for-sidecars.md)). Both share the
+  same Redis and Postgres.
 
-The six binding design decisions are recorded in [docs/adr](docs/adr/README.md).
+The six binding design decisions, and every decision since, are recorded in
+[docs/adr](docs/adr/README.md).
 
 ## Quickstart
 
@@ -52,8 +64,30 @@ git clone https://github.com/Rimaz17/RateGuard.git
 cd RateGuard
 make up      # creates .env, builds, applies migrations, starts, waits for health checks
 make smoke   # GET /healthz and GET /readyz, expects 200 from both
+```
+
+Then make a plan, register an application and decide a few requests (`TOKEN` is the
+placeholder admin token from `configs/.env.example`):
+
+```bash
+TOKEN=change-me-local-only-admin-token-0000
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"Tour","capacity":3,"window_seconds":60,"default":true}' http://127.0.0.1:8080/v1/policies
+KEY=$(curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"Tour App"}' http://127.0.0.1:8080/v1/clients | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')
+for i in 1 2 3 4; do
+  curl -s -w ' %{http_code}\n' -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+    -d '{"method":"GET","path":"/api/products"}' http://127.0.0.1:8080/v1/check
+done
+# three 200s, then {"allowed":false,...,"retry_after":20} 429
+sleep 12   # usage reaches Postgres within about 11 seconds
+curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/v1/analytics/usage?top=3'
+# {"from":...,"totals":{"requests":4,"allowed":3,"rejected":1},...,"clients":[{"name":"Tour App",...}],...}
 make down
 ```
+
+The new application has no plan of its own, so it uses the default policy: 3 requests,
+refilling one every 20 seconds.
 
 If your `.env` predates phase 2, add `RG_ADMIN_TOKEN` to it (see
 [configs/.env.example](configs/.env.example)); Compose refuses to start without it.
@@ -106,6 +140,8 @@ ones that only Docker Compose reads.
 | `RG_UNIX_SOCKET` | *(empty)* | Absolute path of a Unix socket to also serve on, for sidecars; empty means TCP only ([ADR 0017](docs/adr/0017-unix-socket-for-sidecars.md)) |
 | `RG_UNIX_SOCKET_MODE` | `0660` | Octal permission of the socket file; its peers are trusted to set `X-Forwarded-For` |
 | `RG_INSTANCE_COUNT` | `1` | Instances sharing the traffic; local buckets hold `capacity / RG_INSTANCE_COUNT` while Redis is down |
+| `RG_USAGE_FLUSH_INTERVAL` | `1s` | How often each instance adds its usage counts into Redis ([ADR 0018](docs/adr/0018-usage-analytics-pipeline.md)) |
+| `RG_USAGE_ROLLUP_INTERVAL` | `10s` | How often usage counts move from Redis into Postgres; analytics lag by about both intervals |
 | `RG_READINESS_TIMEOUT` | `2s` | Per-dependency timeout for the `/readyz` checks |
 | `RG_TRUSTED_PROXIES` | *(empty)* | Comma-separated CIDRs whose `X-Forwarded-For` is believed for IP identification; empty trusts none |
 | `RG_ADMIN_TOKEN` | *(required)* | Bearer token for the admin API, at least 32 characters ([ADR 0008](docs/adr/0008-admin-api-bearer-token.md)) |
@@ -127,12 +163,12 @@ invalid.
 | `GET/POST /v1/policies/{id}/rules`, `DELETE /v1/policies/{id}/rules/{ruleID}` | A policy's endpoint rules | Available |
 | `PUT /v1/clients/{id}/policy` | Assign a policy to an application, or remove it with `null` | Available |
 | `POST /v1/check` | Rate-limit decision: takes a token, answers 200 or 429 ([ADR 0015](docs/adr/0015-decision-endpoint.md)) | Available |
-| `GET /metrics` | Prometheus scrape: degraded decisions, Redis errors, breaker state | Available (more in phase 7) |
+| `GET /metrics` | Prometheus scrape: decisions, latency, cache hit ratio, Redis and breaker health, usage losses | Available |
 | `POST /v1/peek` | Report the allowance without taking a token ([ADR 0016](docs/adr/0016-rate-limit-headers-and-peek.md)) | Available |
 | `GET /openapi.yaml` | The OpenAPI document this binary was built with | Available |
-| `GET /v1/analytics/usage` | Usage analytics | Phase 7 |
+| `GET /v1/analytics/usage` | Usage: totals, the most throttled clients, and volume by the minute or hour ([ADR 0018](docs/adr/0018-usage-analytics-pipeline.md)) | Available |
 
-The `/v1/clients` and `/v1/policies` routes require `Authorization: Bearer <RG_ADMIN_TOKEN>`
+The `/v1/clients`, `/v1/policies` and `/v1/analytics` routes require `Authorization: Bearer <RG_ADMIN_TOKEN>`
 ([ADR 0008](docs/adr/0008-admin-api-bearer-token.md)). Every error response, routing
 misses included, is `{"error": "...", "request_id": "..."}`, and never carries internal
 detail; a 405 also lists the accepted methods in `Allow`. `make docs` serves Swagger UI
@@ -287,8 +323,8 @@ untouched, and the file is removed on shutdown. Point the middleware at it with
 
 Over the socket, a caller without an API key is identified by the address the
 application adds to `X-Forwarded-For`, because only processes the file's permissions let
-in can connect. Keep the mode tight for that reason. Phase 7 publishes the latency of
-both topologies.
+in can connect. Keep the mode tight for that reason. The latency of both topologies is
+under [Performance](#performance).
 
 ### Shared buckets in Redis
 
@@ -333,6 +369,86 @@ The integration suite kills Redis mid-test under three instances: every request 
 answered, each instance allows exactly its local share, all of it shows in `/metrics`,
 and once Redis returns the breakers close and Redis's balance applies again.
 
+### Usage analytics
+
+`GET /v1/analytics/usage` reports how many checks were allowed and rejected
+([ADR 0018](docs/adr/0018-usage-analytics-pipeline.md)):
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:8080/v1/analytics/usage?from=2026-11-05T09:00:00Z&to=2026-11-05T10:00:00Z&granularity=minute&top=5'
+```
+
+```json
+{
+  "from": "2026-11-05T09:00:00Z", "to": "2026-11-05T10:00:00Z", "granularity": "minute",
+  "totals":       {"requests": 1300, "allowed": 1200, "rejected": 100},
+  "unidentified": {"requests": 40, "allowed": 40, "rejected": 0},
+  "clients": [
+    {"client_id": "...", "name": "Customer App", "requests": 900, "allowed": 820, "rejected": 80}
+  ],
+  "series": [
+    {"start": "2026-11-05T09:00:00Z", "requests": 21, "allowed": 21, "rejected": 0}
+  ]
+}
+```
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `from`, `to` | the last 24 hours | RFC 3339 times; the range is widened to whole minutes or hours, in UTC, and the response says which range it answered |
+| `granularity` | `hour` | `minute` or `hour`; a series holds at most 1,440 points (a day by the minute, 60 days by the hour) |
+| `top` | `10` | How many clients to rank, from 1 to 100 |
+
+`clients` ranks applications by rejections, then by requests, so the most throttled
+come first. `unidentified` counts callers without an API key, who are known by IP;
+their addresses are never stored. `series` has a point for every minute or hour,
+zeros included. Peeks are not counted.
+
+A decision only counts itself in memory. Every second each instance adds its counts to
+one hash per minute in Redis, and every 10 seconds any instance drains those hashes
+into the `usage_rollups` table. A drain reads and deletes in one Lua script, so no two
+instances take the same counts and no leader is needed. Reports therefore lag by about
+11 seconds. An instance that crashes loses up to a second of its counts, and every loss
+the service can see increments `rateguard_usage_dropped_total`.
+
+### Observability
+
+**Metrics.** `GET /metrics` serves Prometheus metrics from a registry of the service's
+own ([ADR 0014](docs/adr/0014-degraded-decisions.md),
+[ADR 0019](docs/adr/0019-decision-and-cache-metrics.md)). No label carries a client, a
+key or an address.
+
+| Metric | Labels | What it shows |
+|---|---|---|
+| `rateguard_decisions_total` | `outcome`: `allowed`, `rejected`, `no_policy`, `error` | Checks by outcome |
+| `rateguard_decision_duration_seconds` | `operation`: `check`, `peek` | Histogram of the server's time per decision request, from 100µs to 1s |
+| `rateguard_cache_lookups_total` | `cache`: `api_key`, `client_policy`, `policy`, `default_policy`; `result`: `hit`, `miss` | Hit ratio of the caches that keep Postgres off the hot path |
+| `rateguard_degraded_decisions_total` | `mode`: `local`, `open`, `closed` | Decisions made without Redis |
+| `rateguard_redis_errors_total` | | Failed or timed-out bucket calls |
+| `rateguard_redis_breaker_state` | | 0 closed, 1 half-open, 2 open |
+| `rateguard_usage_dropped_total` | | Checks lost to analytics |
+
+Plus the Go runtime and process collectors. For example:
+
+```promql
+# p99 decision latency per instance
+histogram_quantile(0.99, sum by (instance, le) (rate(rateguard_decision_duration_seconds_bucket{operation="check"}[5m])))
+# share of checks refused
+sum(rate(rateguard_decisions_total{outcome="rejected"}[5m])) / sum(rate(rateguard_decisions_total[5m]))
+# cache hit ratio, per cache
+sum by (cache) (rate(rateguard_cache_lookups_total{result="hit"}[5m])) / sum by (cache) (rate(rateguard_cache_lookups_total[5m]))
+```
+
+**Logs.** JSON lines on stdout through `log/slog`. Every request gets an ID (reused from
+a valid inbound `X-Request-ID`, otherwise generated), returned in `X-Request-ID` and
+included in every log line about that request. Nothing is logged per decision
+([ADR 0004](docs/adr/0004-the-hot-path-is-sacred.md)): an outage shows as one WARN when
+the breaker opens and at most one every 10 seconds while degraded, and a failed request
+as one ERROR with its request ID. API keys appear only as their public prefix.
+
+**Probes.** `/healthz` answers while the process is up; `/readyz` checks Postgres and
+Redis and answers 503 naming whichever is unreachable.
+
 ### The token bucket
 
 Each caller's bucket holds up to `capacity` tokens and refills continuously at
@@ -370,7 +486,9 @@ The tests check, without any network:
 
 ## Data model
 
-PostgreSQL holds the configuration: policies and their endpoint rules, clients and their API keys. Redis holds only ephemeral bucket state and the invalidation channel. The schema lives in
+PostgreSQL holds the configuration (policies and their endpoint rules, clients and their
+API keys) and per-minute usage. Redis holds only ephemeral state: buckets, usage counts
+not yet rolled up, and the invalidation channel. The schema lives in
 [`migrations/`](migrations) as reversible, numbered pairs.
 
 | Store | Holds |
@@ -379,7 +497,9 @@ PostgreSQL holds the configuration: policies and their endpoint rules, clients a
 | `endpoint_rules` table | A policy's own limits for particular methods and path patterns |
 | `clients` table | Registered applications, their status and assigned policy |
 | `api_keys` table | Each client's keys: public prefix, SHA-256 digest, revocation time |
+| `usage_rollups` table | Checks allowed and rejected per client (or for all callers known by IP) per minute |
 | Redis `rg:bucket:*` | One hash per active bucket: `tokens` and `last_refill_us`, expiring when full |
+| Redis `rg:usage:*` | Usage counts on their way from the instances to `usage_rollups` |
 | Redis `rg:policy:invalidate` | Pub/sub channel carrying `client:<id>` and `policy:<id>` changes |
 
 Column-level detail and the conventions behind it are in
@@ -395,6 +515,7 @@ make test-integration # testcontainers suite against real Postgres and Redis (ne
 make cover            # race-tested unit tests with coverage.out; make cover-engine then checks the engine's 90% floor
 make lint-docker      # the pinned golangci-lint in Docker, if it is not installed locally
 make run              # run on the host with the current environment
+make load             # k6 and socket benchmarks against the compose stack (about 25 minutes; see Performance)
 ```
 
 ### Migrations
@@ -431,9 +552,10 @@ followed by `make up`, `make smoke`, checks of the admin API (clients, then a po
 with a rule assigned to a client, and the instance's subscription to policy changes), a
 decision through `/v1/check` with its bucket in Redis and `/metrics`, the rate-limit
 headers, a peek, `/openapi.yaml` and a JSON 404, the Go middleware's end-to-end test, a
-migrate down and up through the binary, and a check that `/readyz` turns 503 when
-Postgres stops and 200 when it returns; the middleware module's own format, vet, lint
-and race tests; and `make demo`, the three-instance demo above.
+usage report that reaches Postgres through Redis, the phase 7 metrics, a smoke run of
+the k6 scripts, a migrate down and up through the binary, and a check that `/readyz`
+turns 503 when Postgres stops and 200 when it returns; the middleware module's own
+format, vet, lint and race tests; and `make demo`, the three-instance demo above.
 
 ### Layout
 
@@ -444,6 +566,8 @@ internal/domain/          entities and sentinel errors; standard library only
 internal/client/          client registration, API key issue, rotation and authentication
 internal/policy/          policy and rule management, resolution, its cache and pub/sub sync
 internal/cache/           the TTL + singleflight cache behind policies and API keys
+internal/analytics/       usage recorder, Redis flusher, rollup to Postgres, and reports
+internal/analytics/scripts the add and drain Lua scripts for usage counts
 internal/limiter/         token bucket engine, Redis and in-memory stores, circuit breaker, keys
 internal/limiter/scripts  the refill-and-consume Lua script
 internal/storage/postgres pgx pool, repositories and the migrator
@@ -451,15 +575,85 @@ internal/transport/http   chi router, handlers and middleware (package httptrans
 migrations/               numbered SQL migrations, embedded in the binary
 api/                      the HTTP contract (openapi.yaml), embedded and served by the binary
 examples/go-middleware/   reference Go middleware and sample app (a module of its own)
-scripts/                  the distributed demo and its nginx config
+scripts/                  the distributed demo, its nginx config, and the load test runner
 test/integration/         testcontainers suite (build tag: integration)
+test/load/                k6 scripts and the Unix-socket benchmark (socketbench)
 docs/                     data model and architecture decision records
 ```
 
-Phase 7 adds `internal/analytics`.
-
 ## Performance
 
-Measured p50/p99 latency for central and sidecar deployment, and the single-key
-throughput ceiling ([ADR 0003](docs/adr/0003-no-hot-key-sharding-in-v1.md)), will be
-published here in phase 7. Nothing has been measured yet.
+Measured on 2026-11-05 at commit `312c006` with `make load`
+([ADR 0020](docs/adr/0020-how-latency-and-the-key-ceiling-are-measured.md),
+[test/load](test/load/README.md)) on one laptop: an Intel Core i5-10210U (4 cores, 8
+threads, 1.6 GHz base), 16 GB of RAM, Windows 11 and Docker Desktop 29.2.1 on WSL2 (8
+CPUs and 7.7 GB for Docker). k6, RateGuard, Redis and Postgres all ran on it at once.
+Treat the figures as the cost of the decision path on modest hardware, not as a server
+benchmark, and re-measure on your own.
+
+Every request below was an allowed take that wrote its bucket in Redis (the most
+expensive decision), every one was answered 200, and warm-up was not measured.
+
+### Latency: central and sidecar
+
+One instance, 100 API keys, requests arriving at a fixed rate for 60 seconds:
+
+| Topology | Client | p50 at 250/s | p99 at 250/s | p50 at 1,000/s | p99 at 1,000/s |
+|---|---|---|---|---|---|
+| Central, over the Docker network | k6 | 1.44 ms | 26.4 ms | 0.89 ms | 41.8 ms |
+| Sidecar, loopback TCP | k6 | 1.40 ms | 23.9 ms | 1.59 ms | 89.9 ms |
+| Sidecar, Unix socket | Go ([socketbench](test/load/socketbench/main.go)) | 1.08 ms | 15.4 ms | 1.11 ms | 92.3 ms |
+| Sidecar, loopback TCP | Go ([socketbench](test/load/socketbench/main.go)) | 0.86 ms | 9.1 ms | 1.20 ms | 80.1 ms |
+
+RateGuard's own view of the same runs, from `rateguard_decision_duration_seconds`, put
+the median at or under 1 ms in every run (the histogram resolves bucket bounds, not
+exact values). Its p99 was at most 10 to 25 ms at 250 a second, and at most 25 to
+100 ms at 1,000.
+
+What the numbers say, and what they do not:
+
+- **A decision costs about a millisecond at the median,** as the caller sees it, and
+  less than that inside RateGuard.
+- **On one machine the topologies cannot be told apart.** The difference between
+  crossing Docker's bridge and staying on loopback, or between TCP and the Unix socket,
+  is smaller than the noise between runs; the socket was not consistently faster than
+  loopback TCP here. What a sidecar saves in a real deployment is the network round trip between
+  hosts, which a single machine cannot show. Add your own network's round trip to the
+  central figures.
+- **The tail comes from sharing the CPU, not from the network.** The service's own p99
+  is close to the caller's, and it grows with load: the load generator, RateGuard and
+  Redis compete for the same 8 logical CPUs, and in a saturation run k6 alone used more
+  CPU than RateGuard. On this laptop the overview's single-digit-millisecond budget
+  holds at the median, and at p90 in every run but one (k6 on the sidecar at 1,000 a
+  second, 15.3 ms); it does not hold at p99.
+
+### Throughput and the per-key ceiling
+
+k6 with 100 virtual users sending back to back for 30 seconds
+([ADR 0003](docs/adr/0003-no-hot-key-sharding-in-v1.md)):
+
+| Run | Requests a second | p50 | p99 |
+|---|---|---|---|
+| One instance, one hot key | 4,921 | 14.5 ms | 93.7 ms |
+| One instance, 100 keys | 4,757 | 15.2 ms | 99.0 ms |
+| Three instances behind nginx, one hot key | 2,503 | 28.5 ms | 170.0 ms |
+| Three instances behind nginx, 100 keys | 2,386 | 30.1 ms | 179.2 ms |
+| Redis alone: the bucket script on one key (`redis-benchmark`, 50 connections) | 19,680 | | |
+| Redis alone: the bucket script on random keys | 20,740 | | |
+
+- **The per-key ceiling is about 19,700 decisions a second on this machine,** the rate
+  at which Redis runs the bucket script on a single key. It is the same as on random
+  keys, because one Redis runs every script on one thread: with a single Redis, one
+  key's ceiling is Redis's ceiling.
+- **End to end, the hot key was never the limit.** One key and 100 keys ran at the same
+  rate, about 4,900 decisions a second through one instance, bound by CPU. Three
+  instances on the same four cores were slower than one, since nginx and two more
+  processes compete for those cores: scaling out needs more machines, not more
+  processes on one.
+- **Runs vary.** Repeats of the same single-instance run on this laptop ranged from about
+  1,750 to 4,900 requests a second, depending on how hot the CPU was. The figures above
+  come from one run, with 20 idle seconds before each measurement.
+- **Sharding.** A client that needs more than the ceiling needs its bucket split into
+  `K` sub-buckets of `capacity / K`, picked at random, as ADR 0003 plans. Because a
+  single Redis caps every key together, the sub-buckets only raise the ceiling when they
+  live on different Redis nodes. `keyFor` is still the one place to change.

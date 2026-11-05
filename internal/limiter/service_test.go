@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -170,5 +171,76 @@ func TestServicePassesTheRequestToTheResolver(t *testing.T) {
 	}
 	if len(p.asked) != 1 || p.asked[0] != "ip DELETE /api/orders/7" {
 		t.Errorf("resolver was asked %v, want the identity, method and path", p.asked)
+	}
+}
+
+// tally records what the service reports about each check.
+type tally struct {
+	mu       sync.Mutex
+	outcomes []limiter.Outcome
+	usage    []string
+}
+
+func (t *tally) Checked(o limiter.Outcome) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.outcomes = append(t.outcomes, o)
+}
+
+func (t *tally) Record(clientID string, allowed bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	verdict := "rejected"
+	if allowed {
+		verdict = "allowed"
+	}
+	t.usage = append(t.usage, clientID+" "+verdict)
+}
+
+func TestServiceCountsEveryCheck(t *testing.T) {
+	p := &plan{capacity: 1}
+	tl := &tally{}
+	s := limiter.New(p, limiter.NewMemory(nil), limiter.WithUsage(tl), limiter.WithOutcomes(tl))
+
+	check(t, s, keyed(clientA), "/")
+	check(t, s, keyed(clientA), "/")
+	check(t, s, byIP("203.0.113.7"), "/")
+	if _, err := s.Peek(t.Context(), keyed(clientA), "GET", "/"); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	p.err = domain.ErrNoPolicy
+	p.mu.Unlock()
+	_, _ = s.Check(t.Context(), keyed(clientB), "GET", "/") // the outcome is what is tested
+	p.mu.Lock()
+	p.err = errors.New("postgres is down")
+	p.mu.Unlock()
+	_, _ = s.Check(t.Context(), keyed(clientB), "GET", "/")
+
+	wantOutcomes := []limiter.Outcome{
+		limiter.OutcomeAllowed, limiter.OutcomeRejected, limiter.OutcomeAllowed,
+		limiter.OutcomeNoPolicy, limiter.OutcomeError,
+	}
+	if !slices.Equal(tl.outcomes, wantOutcomes) {
+		t.Errorf("outcomes = %v, want %v (peeks are not counted)", tl.outcomes, wantOutcomes)
+	}
+	// Only decided checks are usage; an IP caller is recorded without its
+	// address.
+	wantUsage := []string{clientA + " allowed", clientA + " rejected", " allowed"}
+	if !slices.Equal(tl.usage, wantUsage) {
+		t.Errorf("usage = %q, want %q", tl.usage, wantUsage)
+	}
+}
+
+func TestServiceDoesNotCountACheckWhoseCallerLeft(t *testing.T) {
+	tl := &tally{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	s := limiter.New(&plan{capacity: 3}, limiter.NewMemory(nil), limiter.WithUsage(tl), limiter.WithOutcomes(tl))
+	if _, err := s.Check(ctx, keyed(clientA), "GET", "/"); err == nil {
+		t.Fatal("Check with a cancelled context succeeded, want an error")
+	}
+	if len(tl.outcomes) != 0 || len(tl.usage) != 0 {
+		t.Errorf("counted %v and %v for a caller that left, want nothing", tl.outcomes, tl.usage)
 	}
 }

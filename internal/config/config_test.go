@@ -59,6 +59,10 @@ func TestLoadDefaults(t *testing.T) {
 			BreakerFailures: 5,
 			BreakerCooldown: 5 * time.Second,
 		},
+		Usage: config.Usage{
+			FlushInterval:  time.Second,
+			RollupInterval: 10 * time.Second,
+		},
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("Load() = %+v, want %+v", cfg, want)
@@ -81,6 +85,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("RG_REDIS_FAILURE_MODE", "closed")
 	t.Setenv("RG_REDIS_BREAKER_FAILURES", "2")
 	t.Setenv("RG_REDIS_BREAKER_COOLDOWN", "750ms")
+	t.Setenv("RG_USAGE_FLUSH_INTERVAL", "250ms")
+	t.Setenv("RG_USAGE_ROLLUP_INTERVAL", "1m")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -124,6 +130,9 @@ func TestLoadOverrides(t *testing.T) {
 	r := cfg.Redis
 	if r.Timeout != 40*time.Millisecond || r.FailureMode != config.FailureModeClosed || r.BreakerFailures != 2 || r.BreakerCooldown != 750*time.Millisecond {
 		t.Errorf("Redis failure settings = %s, %s, %d, %s; want 40ms, closed, 2, 750ms", r.Timeout, r.FailureMode, r.BreakerFailures, r.BreakerCooldown)
+	}
+	if u := cfg.Usage; u.FlushInterval != 250*time.Millisecond || u.RollupInterval != time.Minute {
+		t.Errorf("Usage intervals = %s, %s; want 250ms, 1m", u.FlushInterval, u.RollupInterval)
 	}
 }
 
@@ -177,6 +186,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"socket mode not octal", "RG_UNIX_SOCKET_MODE", "0698", "parsing environment"},
 		{"socket mode beyond permissions", "RG_UNIX_SOCKET_MODE", "4777", "parsing environment"},
 		{"socket mode in words", "RG_UNIX_SOCKET_MODE", "rw-rw----", "parsing environment"},
+		{"zero usage flush interval", "RG_USAGE_FLUSH_INTERVAL", "0s", "RG_USAGE_FLUSH_INTERVAL must be positive"},
+		{"negative usage rollup interval", "RG_USAGE_ROLLUP_INTERVAL", "-10s", "RG_USAGE_ROLLUP_INTERVAL must be positive"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

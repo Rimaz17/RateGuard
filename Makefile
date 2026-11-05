@@ -51,6 +51,10 @@ demo: .env ## Three instances behind nginx: show one shared limit, then stop and
 demo-down: ## Stop the demo stack (keeps the Postgres volume)
 	$(DEMO_COMPOSE) down
 
+.PHONY: load
+load: .env ## Measure latency (central, sidecar, socket) and the hot-key ceiling with k6 (about 25 minutes)
+	./scripts/loadtest.sh
+
 .PHONY: smoke
 smoke: ## Check that /healthz and /readyz on the running stack return 200
 	curl -fsS --retry 10 --retry-connrefused --retry-delay 1 $(HEALTHZ_URL)

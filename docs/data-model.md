@@ -1,8 +1,8 @@
 # Data model
 
-PostgreSQL holds everything that is configured: policies and their endpoint rules,
-clients and their API keys. Redis holds only bucket state and the
-policy-invalidation channel. The hot path (`/v1/check`) never reads Postgres
+PostgreSQL holds everything that is configured, policies and their endpoint rules,
+clients and their API keys, and the per-minute usage counts. Redis holds only bucket
+state, usage counts on their way to Postgres, and the policy-invalidation channel. The hot path (`/v1/check`) never reads Postgres
 ([ADR 0004](adr/0004-the-hot-path-is-sacred.md)).
 
 The schema is defined by the numbered migrations in [`migrations/`](../migrations).
@@ -96,10 +96,29 @@ A full key looks like `rg_cus_7hq2mfx4kd5ta3wb_<52 base32 chars>`:
 Only the part up to and including the 16 random characters is ever logged or shown
 again.
 
+## `usage_rollups`
+
+How many checks each caller had allowed and rejected, one row per caller per minute
+([ADR 0018](adr/0018-usage-analytics-pipeline.md)). Rows are written only by the usage
+rollup, which adds to them; no decision ever waits on this table.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `UUID` | Primary key, `uuidv7()` |
+| `client_id` | `UUID` | References `clients(id)`, `ON DELETE CASCADE`. `NULL` for callers identified only by IP, counted together; no address is stored |
+| `bucket_start` | `TIMESTAMPTZ` | Start of the minute. A CHECK keeps it on a UTC minute boundary |
+| `allowed_count` | `BIGINT` | Checks allowed. At least 0 |
+| `rejected_count` | `BIGINT` | Checks refused with 429. At least 0 |
+
+`(client_id, bucket_start)` is unique with `NULLS NOT DISTINCT`, so callers known by IP
+also get a single row per minute that the rollup's upsert can add to. Its index leads
+with `client_id`; a separate index on `bucket_start` serves the range queries of
+`GET /v1/analytics/usage`. Nothing prunes old rows in v1.
+
 ## Redis
 
-Redis holds nothing that cannot be lost: losing it refills every bucket and costs a
-flush of every instance's caches.
+Redis holds nothing that cannot be lost: losing it refills every bucket, costs a flush
+of every instance's caches, and loses the usage counts not yet rolled up.
 
 ### Bucket state
 
@@ -122,6 +141,23 @@ the resolution of the clock the script reads. Only an allowed take writes the ha
 refusal or a peek leaves it alone. Each write sets `PEXPIRE` to the time until the
 bucket is full again, so a key disappears once it would decide like a new bucket. The
 policy is not part of the key, so a client keeps its balance when its plan changes.
+
+### Usage counts
+
+Each instance flushes the checks it has counted every second into one hash per minute,
+and a rollup on any instance drains them into `usage_rollups` every 10 seconds
+([ADR 0018](adr/0018-usage-analytics-pipeline.md)):
+
+```
+rg:usage:<minute>     hash; <minute> is Unix seconds at the minute's start
+  <client-id>:a       checks allowed for the client in that minute
+  <client-id>:r       checks rejected
+  -:a, -:r            the same for callers identified only by IP
+rg:usage:minutes      sorted set of the minutes that have a hash, scored by minute
+```
+
+A drain reads and deletes one minute's hash in a single script, so two instances never
+take the same counts.
 
 ### Invalidation channel
 

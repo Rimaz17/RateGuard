@@ -10,12 +10,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Rimaz17/RateGuard/api"
+	"github.com/Rimaz17/RateGuard/internal/analytics"
+	"github.com/Rimaz17/RateGuard/internal/cache"
 	"github.com/Rimaz17/RateGuard/internal/client"
 	"github.com/Rimaz17/RateGuard/internal/config"
 	"github.com/Rimaz17/RateGuard/internal/limiter"
@@ -63,17 +63,7 @@ func serve() error {
 		}
 	}()
 
-	// Metrics go to a registry of their own, never the global one.
-	registry := prometheus.NewRegistry()
-	for _, c := range []prometheus.Collector{
-		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-	} {
-		if err := registry.Register(c); err != nil {
-			return fmt.Errorf("registering runtime metrics: %w", err)
-		}
-	}
-	metrics, err := limiter.NewMetrics(registry)
+	registry, metrics, err := newInstruments()
 	if err != nil {
 		return err
 	}
@@ -86,8 +76,9 @@ func serve() error {
 	// policy and client services drop changes from both directly and
 	// publish them for the other instances; the subscriber applies theirs
 	// here.
-	resolver := policy.NewResolver(clientStore, policyStore)
-	keys := client.NewKeyCache(postgres.NewAPIKeys(pool), client.DefaultKeyTTL)
+	resolver := policy.NewResolver(clientStore, policyStore, policy.WithCacheObserver(metrics.cache.Observer))
+	keys := client.NewKeyCache(postgres.NewAPIKeys(pool), client.DefaultKeyTTL,
+		cache.WithObserver(metrics.cache.Observer(cacheAPIKey)))
 	caches := policy.Invalidators{resolver, policy.ClientChanges(keys)}
 	broadcaster := policy.NewBroadcaster(rdb, caches, logger)
 	clients := client.New(clientStore, postgres.NewAPIKeys(pool), broadcaster)
@@ -107,7 +98,7 @@ func serve() error {
 		Timeout:          cfg.Redis.Timeout,
 		FailureThreshold: cfg.Redis.BreakerFailures,
 		Cooldown:         cfg.Redis.BreakerCooldown,
-		Observer:         metrics,
+		Observer:         metrics.limiter,
 		Logger:           logger,
 	})
 	if err != nil {
@@ -116,6 +107,19 @@ func serve() error {
 	logger.Info("decisions use redis",
 		slog.String("failure_mode", cfg.Redis.FailureMode),
 		slog.Int("instance_count", cfg.InstanceCount))
+
+	// Usage is counted in memory on the hot path, flushed into Redis, and
+	// rolled up into Postgres off it (ADR 0004, ADR 0018). The flusher is
+	// not stopped by the signal: it stops when serve returns, after the
+	// servers have drained, so the checks they answer while draining are
+	// still flushed.
+	recorder := analytics.NewRecorder(analytics.RecorderConfig{Observer: metrics.usage})
+	pending := analytics.NewRedisPending(rdb)
+	usageStore := postgres.NewUsage(pool)
+	defer background(context.WithoutCancel(ctx),
+		analytics.NewFlusher(recorder, pending, cfg.Usage.FlushInterval, logger, metrics.usage).Run)()
+	defer background(ctx,
+		analytics.NewRollup(pending, usageStore, cfg.Usage.RollupInterval, logger, metrics.usage).Run)()
 
 	router := httptransport.NewRouter(httptransport.Deps{
 		Logger: logger,
@@ -132,9 +136,12 @@ func serve() error {
 		Policies:         policies,
 		Rules:            policies,
 		Assigner:         policies,
-		Decider:          limiter.New(resolver, buckets),
-		Authenticator:    client.NewAuthenticator(keys),
-		TrustedProxies:   cfg.TrustedProxies,
+		Decider: limiter.New(resolver, buckets,
+			limiter.WithUsage(recorder), limiter.WithOutcomes(metrics.limiter)),
+		Authenticator:  client.NewAuthenticator(keys),
+		TrustedProxies: cfg.TrustedProxies,
+		DecisionTimer:  metrics.http,
+		Usage:          analytics.NewReporter(usageStore, nil),
 	})
 
 	tcp, err := listenTCP(ctx, cfg.HTTPAddr)

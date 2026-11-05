@@ -17,6 +17,12 @@ func TestMetricsStartAtZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := `
+# HELP rateguard_decisions_total Checks on /v1/check by outcome: allowed, rejected, no_policy or error (ADR 0019).
+# TYPE rateguard_decisions_total counter
+rateguard_decisions_total{outcome="allowed"} 0
+rateguard_decisions_total{outcome="error"} 0
+rateguard_decisions_total{outcome="no_policy"} 0
+rateguard_decisions_total{outcome="rejected"} 0
 # HELP rateguard_degraded_decisions_total Rate-limit decisions made without Redis, by failure mode (ADR 0001).
 # TYPE rateguard_degraded_decisions_total counter
 rateguard_degraded_decisions_total{mode="closed"} 0
@@ -65,7 +71,8 @@ rateguard_redis_breaker_state 2
 # TYPE rateguard_redis_errors_total counter
 rateguard_redis_errors_total 2
 `
-	if err := testutil.GatherAndCompare(reg, strings.NewReader(want)); err != nil {
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want),
+		"rateguard_degraded_decisions_total", "rateguard_redis_breaker_state", "rateguard_redis_errors_total"); err != nil {
 		t.Error(err)
 	}
 }
@@ -77,5 +84,29 @@ func TestNewMetricsRefusesADuplicateRegistration(t *testing.T) {
 	}
 	if _, err := limiter.NewMetrics(reg); err == nil {
 		t.Error("registering the metrics twice succeeded, want an error")
+	}
+}
+
+func TestMetricsCountOutcomes(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m, err := limiter.NewMetrics(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := limiter.New(&plan{capacity: 1}, limiter.NewMemory(nil), limiter.WithOutcomes(m))
+	check(t, s, keyed(clientA), "/")
+	check(t, s, keyed(clientA), "/")
+	check(t, s, keyed(clientA), "/")
+
+	want := `
+# HELP rateguard_decisions_total Checks on /v1/check by outcome: allowed, rejected, no_policy or error (ADR 0019).
+# TYPE rateguard_decisions_total counter
+rateguard_decisions_total{outcome="allowed"} 1
+rateguard_decisions_total{outcome="error"} 0
+rateguard_decisions_total{outcome="no_policy"} 0
+rateguard_decisions_total{outcome="rejected"} 2
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "rateguard_decisions_total"); err != nil {
+		t.Error(err)
 	}
 }

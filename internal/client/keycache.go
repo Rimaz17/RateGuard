@@ -30,9 +30,10 @@ type KeyCache struct {
 var _ KeyFinder = (*KeyCache)(nil)
 
 // NewKeyCache returns an empty KeyCache in front of keys whose entries live
-// for ttl.
-func NewKeyCache(keys KeyFinder, ttl time.Duration) *KeyCache {
-	return &KeyCache{keys: cache.New(ttl, keyLoadTimeout, nil, keys.FindByPrefix)}
+// for ttl. opts configure the underlying cache, such as an observer for
+// its hit ratio.
+func NewKeyCache(keys KeyFinder, ttl time.Duration, opts ...cache.Option) *KeyCache {
+	return &KeyCache{keys: cache.New(ttl, keyLoadTimeout, nil, keys.FindByPrefix, opts...)}
 }
 
 // FindByPrefix implements KeyFinder.

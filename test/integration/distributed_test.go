@@ -22,6 +22,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/Rimaz17/RateGuard/internal/analytics"
 	"github.com/Rimaz17/RateGuard/internal/client"
 	"github.com/Rimaz17/RateGuard/internal/limiter"
 	"github.com/Rimaz17/RateGuard/internal/policy"
@@ -30,9 +31,13 @@ import (
 )
 
 // node is one RateGuard process as main wires it: the whole router, with
-// decisions on Redis behind the circuit breaker, and its own metrics.
+// decisions on Redis behind the circuit breaker, its own metrics, and its
+// usage pipeline. The flusher and rollup do not run on their own: a test
+// calls Flush and Roll when it wants them, so nothing depends on timing.
 type node struct {
-	srv *httptest.Server
+	srv     *httptest.Server
+	flusher *analytics.Flusher
+	rollup  *analytics.Rollup
 }
 
 type nodeOptions struct {
@@ -68,6 +73,17 @@ func newNode(t *testing.T, pool *pgxpool.Pool, o nodeOptions) *node {
 	if err != nil {
 		t.Fatal(err)
 	}
+	httpMetrics, err := httptransport.NewMetrics(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageMetrics, err := analytics.NewMetrics(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := analytics.NewRecorder(analytics.RecorderConfig{Observer: usageMetrics})
+	pending := analytics.NewRedisPending(rdb)
+	usageStore := postgres.NewUsage(pool)
 	var primary limiter.Store = limiter.NewRedis(rdb)
 	if o.memoryOnly {
 		primary = limiter.NewMemory(nil)
@@ -95,11 +111,17 @@ func newNode(t *testing.T, pool *pgxpool.Pool, o nodeOptions) *node {
 		Policies:         policies,
 		Rules:            policies,
 		Assigner:         policies,
-		Decider:          limiter.New(resolver, buckets),
+		Decider:          limiter.New(resolver, buckets, limiter.WithUsage(recorder), limiter.WithOutcomes(metrics)),
 		Authenticator:    client.NewAuthenticator(keys),
+		DecisionTimer:    httpMetrics,
+		Usage:            analytics.NewReporter(usageStore, nil),
 	}))
 	t.Cleanup(srv.Close)
-	return &node{srv: srv}
+	return &node{
+		srv:     srv,
+		flusher: analytics.NewFlusher(recorder, pending, time.Hour, logger, usageMetrics),
+		rollup:  analytics.NewRollup(pending, usageStore, time.Hour, logger, usageMetrics),
+	}
 }
 
 // metric scrapes the node's /metrics and returns one sample's value.

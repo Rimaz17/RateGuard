@@ -34,6 +34,7 @@ type Cache[V any] struct {
 	loadTimeout time.Duration
 	now         func() time.Time
 	load        Loader[V]
+	observer    Observer
 
 	mu    sync.Mutex
 	items map[string]item[V]
@@ -51,23 +52,57 @@ type item[V any] struct {
 // each bounded by loadTimeout. now is the clock that expires entries, or
 // time.Now when nil; it never touches bucket arithmetic, which runs on
 // Redis's clock (ADR 0002).
-func New[V any](ttl, loadTimeout time.Duration, now func() time.Time, load Loader[V]) *Cache[V] {
+func New[V any](ttl, loadTimeout time.Duration, now func() time.Time, load Loader[V], opts ...Option) *Cache[V] {
 	if now == nil {
 		now = time.Now
+	}
+	var s settings
+	for _, opt := range opts {
+		opt(&s)
+	}
+	if s.observer == nil {
+		s.observer = nopObserver{}
 	}
 	return &Cache[V]{
 		ttl:         ttl,
 		loadTimeout: loadTimeout,
 		now:         now,
 		load:        load,
+		observer:    s.observer,
 		items:       make(map[string]item[V]),
 	}
 }
+
+// Observer is told the result of every Get, for the cache hit ratio
+// (ADR 0019). It runs on the decision path and must be cheap and
+// non-blocking.
+type Observer interface {
+	// Lookup reports whether a Get found a live entry. A Get that joins
+	// another caller's load is a miss.
+	Lookup(hit bool)
+}
+
+// Option configures a Cache.
+type Option func(*settings)
+
+type settings struct {
+	observer Observer
+}
+
+// WithObserver reports every lookup to o.
+func WithObserver(o Observer) Option {
+	return func(s *settings) { s.observer = o }
+}
+
+type nopObserver struct{}
+
+func (nopObserver) Lookup(bool) {}
 
 // Get returns the cached value for key, loading it on a miss. A caller whose
 // context ends stops waiting, but the shared load carries on for the others.
 func (c *Cache[V]) Get(ctx context.Context, key string) (V, error) {
 	v, epoch, ok := c.lookup(key)
+	c.observer.Lookup(ok)
 	if ok {
 		return v, nil
 	}
