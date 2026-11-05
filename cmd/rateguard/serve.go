@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Rimaz17/RateGuard/api"
 	"github.com/Rimaz17/RateGuard/internal/client"
 	"github.com/Rimaz17/RateGuard/internal/config"
 	"github.com/Rimaz17/RateGuard/internal/limiter"
@@ -124,6 +125,7 @@ func serve() error {
 		},
 		ReadinessTimeout: cfg.ReadinessTimeout,
 		Metrics:          promhttp.HandlerFor(registry, promhttp.HandlerOpts{}),
+		OpenAPI:          api.OpenAPI(),
 		AdminToken:       cfg.AdminToken.Value(),
 		Clients:          clients,
 		Keys:             clients,

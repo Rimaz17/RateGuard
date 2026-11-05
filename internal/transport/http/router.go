@@ -26,6 +26,10 @@ type Deps struct {
 	// route is not mounted.
 	Metrics http.Handler
 
+	// OpenAPI is the contract served on GET /openapi.yaml. When empty, the
+	// route is not mounted.
+	OpenAPI string
+
 	// AdminToken guards every admin route (ADR 0008). Empty locks them
 	// all: no presented token can match it.
 	AdminToken string
@@ -96,6 +100,16 @@ func NewRouter(d Deps) http.Handler {
 		// Unauthenticated like the probes: its labels never name a client
 		// or a key (ADR 0014).
 		r.Method(http.MethodGet, "/metrics", d.Metrics)
+	}
+
+	if d.OpenAPI != "" {
+		spec := []byte(d.OpenAPI)
+		r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+			// application/yaml is the registered type (RFC 9512).
+			w.Header().Set("Content-Type", "application/yaml")
+			w.Header().Set("Cache-Control", "no-cache")
+			_, _ = w.Write(spec) // a failed write means the client left
+		})
 	}
 
 	if d.Decider != nil && d.Authenticator != nil {

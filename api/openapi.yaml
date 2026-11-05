@@ -110,6 +110,20 @@ paths:
               example: |
                 # TYPE rateguard_degraded_decisions_total counter
                 rateguard_degraded_decisions_total{mode="local"} 0
+  /openapi.yaml:
+    get:
+      tags: [health]
+      operationId: getOpenAPI
+      summary: This document
+      description: The OpenAPI document the running binary was built with.
+      security: []
+      responses:
+        "200":
+          description: The contract.
+          content:
+            application/yaml:
+              schema:
+                type: string
   /v1/check:
     post:
       tags: [decisions]

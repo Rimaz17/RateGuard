@@ -3,6 +3,7 @@ package httptransport_test
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -94,6 +95,29 @@ func TestMetricsRouteIsAbsentWithoutAHandler(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("GET /metrics without a handler = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestOpenAPIRouteServesTheGivenDocument(t *testing.T) {
+	const spec = "openapi: 3.1.0\ninfo: {title: test, version: '1'}\n"
+	srv := httptest.NewServer(httptransport.NewRouter(httptransport.Deps{Logger: slog.New(slog.DiscardHandler), OpenAPI: spec}))
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/openapi.yaml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != spec || resp.Header.Get("Content-Type") != "application/yaml" {
+		t.Errorf("GET /openapi.yaml = %d %q (%s), want the document as application/yaml", resp.StatusCode, body, resp.Header.Get("Content-Type"))
 	}
 }
 
