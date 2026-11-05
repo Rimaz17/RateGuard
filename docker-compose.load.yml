@@ -1,0 +1,28 @@
+# The load-test stack: docker-compose.yml, with RateGuard also serving on a Unix
+# socket in a named volume, so the socket benchmark can reach it the way a sidecar
+# would. Layered on by scripts/loadtest.sh (`make load`):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.load.yml up -d --build --wait
+services:
+  # One-shot job: a new volume belongs to root, and RateGuard runs as distroless's
+  # nonroot user (65532), which must create its socket there.
+  socket-dir:
+    image: busybox:1.37.0
+    command: ["chown", "65532:65532", "/run/rateguard"]
+    volumes:
+      - rgsocket:/run/rateguard
+    restart: "no"
+
+  rateguard:
+    environment:
+      RG_UNIX_SOCKET: /run/rateguard/rateguard.sock
+    volumes:
+      - rgsocket:/run/rateguard
+    depends_on:
+      socket-dir:
+        condition: service_completed_successfully
+
+volumes:
+  rgsocket:
+    # A fixed name, so the benchmark container can mount it by name.
+    name: rateguard-load-socket

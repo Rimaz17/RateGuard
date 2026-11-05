@@ -26,3 +26,6 @@ Thumbs.db
 # Scratch
 *.log
 tmp/
+
+# Load test reports (scripts/loadtest.sh)
+test/load/results/
