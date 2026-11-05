@@ -72,6 +72,19 @@ type Config struct {
 
 	Database Database
 	Redis    Redis
+	Usage    Usage
+}
+
+// Usage configures how usage counts move from each instance to Postgres
+// (ADR 0018).
+type Usage struct {
+	// FlushInterval is how often an instance adds its counts in Redis. It
+	// is also about how much usage an instance that crashes loses.
+	FlushInterval time.Duration `env:"RG_USAGE_FLUSH_INTERVAL" envDefault:"1s"`
+
+	// RollupInterval is how often an instance moves counts from Redis into
+	// Postgres. Analytics lag real time by about both intervals together.
+	RollupInterval time.Duration `env:"RG_USAGE_ROLLUP_INTERVAL" envDefault:"10s"`
 }
 
 // Redis failure modes (ADR 0001).
@@ -165,6 +178,8 @@ func (c Config) validate() error {
 		namedDuration{"RG_HTTP_IDLE_TIMEOUT", c.HTTPIdleTimeout},
 		namedDuration{"RG_SHUTDOWN_TIMEOUT", c.ShutdownTimeout},
 		namedDuration{"RG_READINESS_TIMEOUT", c.ReadinessTimeout},
+		namedDuration{"RG_USAGE_FLUSH_INTERVAL", c.Usage.FlushInterval},
+		namedDuration{"RG_USAGE_ROLLUP_INTERVAL", c.Usage.RollupInterval},
 	)
 	if n := len(c.AdminToken.Value()); n > 0 && n < MinAdminTokenLen {
 		errs = append(errs, fmt.Errorf("RG_ADMIN_TOKEN must be at least %d characters, got %d", MinAdminTokenLen, n))

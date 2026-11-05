@@ -106,6 +106,8 @@ ones that only Docker Compose reads.
 | `RG_UNIX_SOCKET` | *(empty)* | Absolute path of a Unix socket to also serve on, for sidecars; empty means TCP only ([ADR 0017](docs/adr/0017-unix-socket-for-sidecars.md)) |
 | `RG_UNIX_SOCKET_MODE` | `0660` | Octal permission of the socket file; its peers are trusted to set `X-Forwarded-For` |
 | `RG_INSTANCE_COUNT` | `1` | Instances sharing the traffic; local buckets hold `capacity / RG_INSTANCE_COUNT` while Redis is down |
+| `RG_USAGE_FLUSH_INTERVAL` | `1s` | How often each instance adds its usage counts into Redis ([ADR 0018](docs/adr/0018-usage-analytics-pipeline.md)) |
+| `RG_USAGE_ROLLUP_INTERVAL` | `10s` | How often usage counts move from Redis into Postgres; analytics lag by about both intervals |
 | `RG_READINESS_TIMEOUT` | `2s` | Per-dependency timeout for the `/readyz` checks |
 | `RG_TRUSTED_PROXIES` | *(empty)* | Comma-separated CIDRs whose `X-Forwarded-For` is believed for IP identification; empty trusts none |
 | `RG_ADMIN_TOKEN` | *(required)* | Bearer token for the admin API, at least 32 characters ([ADR 0008](docs/adr/0008-admin-api-bearer-token.md)) |
