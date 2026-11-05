@@ -20,20 +20,7 @@ make an HTTP call can use it.
 
 ## Architecture
 
-```
- client ──▶ your app ──POST /v1/check──▶ ┌─ RateGuard (× N, or a sidecar) ───────────┐
-               ▲                         │ 1. identify   API key cache, or client IP │
-               └──── 200 or 429 ─────────┤ 2. resolve    policy cache, 10s + pub/sub │
-                   + X-RateLimit-*       │ 3. take       one Lua script ─────────────┼──▶ Redis
-                                         │      (breaker: local bucket if Redis down)│      rg:bucket:*   token buckets
-                                         │ 4. count      in memory, no I/O           │      rg:usage:*    usage counts
-                                         ├────────── off the hot path ───────────────┤      rg:policy:invalidate
-                                         │ flusher, 1s   usage counts ───────────────┼──▶ Redis
-                                         │ rollup, 10s   Redis ──▶ usage_rollups ────┼──▶ PostgreSQL
-                                         │ admin API, GET /v1/analytics/usage ───────┼──▶   clients, api_keys,
-                                         │ /metrics  /healthz  /readyz               │      policies, endpoint_rules,
-                                         └───────────────────────────────────────────┘      usage_rollups
-```
+![RateGuard architecture: callers, API and security, the hot path, resilience, data and storage, analytics, observability, and CI and infrastructure](docs/images/rateguard-architecture.png)
 
 Your service returns `429 Too Many Requests` to its own client when RateGuard says no.
 
