@@ -92,12 +92,17 @@ func TestRedisStoreBurstThenRefuse(t *testing.T) {
 func TestRedisStoreAgreesWithTheEngine(t *testing.T) {
 	s, rdb := newRedisStore(t)
 	const key = "rg:bucket:all:client:differential"
-	// Fast enough that the sleeps below refill fractions of tokens.
-	l := limiter.Limit{Capacity: 5, RefillRate: 40}
+	// Two tokens a second: a burst of five back-to-back takes outruns the
+	// refill however slow the machine is, short of 400ms a round trip, so
+	// it always ends in refusals; each 600ms pause then refills a fraction
+	// over one token, so the next burst starts with an allowed take on a
+	// fractional balance.
+	l := limiter.Limit{Capacity: 3, RefillRate: 2}
+	const bursts, perBurst = 8, 5
 
 	var prev limiter.Bucket
 	var allowed, refused int
-	for i := range 60 {
+	for i := range bursts * perBurst {
 		d := take(t, s, key, l)
 		state, ok := bucketState(t, rdb, key)
 		if !ok {
@@ -124,12 +129,8 @@ func TestRedisStoreAgreesWithTheEngine(t *testing.T) {
 			}
 			prev = state
 		}
-		// Mostly faster than the refill, with a pause now and then, so
-		// both allowed and refused takes occur.
-		if i%7 == 6 {
-			time.Sleep(60 * time.Millisecond)
-		} else {
-			time.Sleep(5 * time.Millisecond)
+		if i%perBurst == perBurst-1 {
+			time.Sleep(600 * time.Millisecond)
 		}
 	}
 	if allowed == 0 || refused == 0 {
