@@ -59,11 +59,36 @@ type Deps struct {
 	TrustedProxies TrustedProxies
 }
 
+// routeMethods are the methods a 405's Allow header can list.
+var routeMethods = []string{
+	http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+	http.MethodPatch, http.MethodDelete, http.MethodOptions,
+}
+
+// allowMethods sets the Allow header to the methods mux routes for path. A
+// custom 405 handler is not told them, so they are found by asking the mux.
+func allowMethods(w http.ResponseWriter, mux *chi.Mux, path string) {
+	for _, m := range routeMethods {
+		if mux.Match(chi.NewRouteContext(), m, path) {
+			w.Header().Add("Allow", m)
+		}
+	}
+}
+
 // NewRouter builds the HTTP handler for the whole service.
 func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(RequestID)
 	r.Use(Recoverer(d.Logger))
+	// Routing misses get the standard error body like every other error
+	// (ADR 0016). Set first, so every sub-router inherits them.
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		writeError(w, req, http.StatusNotFound, "no such route")
+	})
+	r.MethodNotAllowed(func(w http.ResponseWriter, req *http.Request) {
+		allowMethods(w, r, req.URL.Path)
+		writeError(w, req, http.StatusMethodNotAllowed, "method not allowed; the Allow header lists the methods this path accepts")
+	})
 
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(d.Logger, d.Readiness, d.ReadinessTimeout))
