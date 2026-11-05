@@ -27,6 +27,8 @@ Your service returns `429 Too Many Requests` to its own client when RateGuard sa
   10 seconds ([ADR 0018](docs/adr/0018-usage-analytics-pipeline.md)).
 - **Redis outage**: decisions fall back to a local bucket per instance
   ([ADR 0001](docs/adr/0001-redis-failure-degrades-to-local-bucket.md)).
+- **Postgres outage**: decisions carry on from the last cached keys and plans for up to
+  15 minutes ([ADR 0021](docs/adr/0021-serve-stale-cache-entries-while-postgres-is-down.md)).
 - **Deployment**: one central service, or a sidecar next to each application on a Unix
   socket ([ADR 0017](docs/adr/0017-unix-socket-for-sidecars.md)).
 

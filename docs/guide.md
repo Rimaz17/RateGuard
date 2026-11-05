@@ -221,6 +221,24 @@ The integration suite kills Redis mid-test under three instances: every request 
 answered, each instance allows exactly its local share, all of it shows in `/metrics`,
 and once Redis returns the breakers close and Redis's balance applies again.
 
+## When Postgres fails
+
+Decisions don't need Postgres while the caches hold the caller's key and plan, and they
+keep it that way through an outage ([ADR 0021](adr/0021-serve-stale-cache-entries-while-postgres-is-down.md)).
+When an entry's 10-second TTL runs out and the reload can't reach Postgres, or takes
+more than 100 ms, the cache serves the last value it loaded. Later lookups get it at
+once, while Postgres is retried in the background about once a second. This lasts for up to 15 minutes past the
+TTL. Postgres saying a key or policy no longer exists is an answer, not an outage, so
+that entry is dropped. Invalidations still arrive over Redis and still drop entries, so
+a changed key or plan is never served from before the change.
+
+During the outage, `/readyz` answers 503 naming Postgres; the admin API answers 500;
+usage counts wait in Redis until the rollup can write them; and a caller seen for the
+first time, with nothing cached, gets a 500. Lookups answered from stale entries count
+as `rateguard_cache_lookups_total{result="stale"}`. The integration suite cuts an
+instance off from Postgres for five times the TTL and expects every check to be
+decided, and the caches to reload when Postgres returns.
+
 ## Usage analytics
 
 `GET /v1/analytics/usage` reports how many checks were allowed and rejected
@@ -274,7 +292,7 @@ key or an address.
 |---|---|---|
 | `rateguard_decisions_total` | `outcome`: `allowed`, `rejected`, `no_policy`, `error` | Checks by outcome |
 | `rateguard_decision_duration_seconds` | `operation`: `check`, `peek` | Histogram of the server's time per decision request, from 100µs to 1s |
-| `rateguard_cache_lookups_total` | `cache`: `api_key`, `client_policy`, `policy`, `default_policy`; `result`: `hit`, `miss` | Hit ratio of the caches that keep Postgres off the hot path |
+| `rateguard_cache_lookups_total` | `cache`: `api_key`, `client_policy`, `policy`, `default_policy`; `result`: `hit`, `miss`, `stale` | Hit ratio of the caches that keep Postgres off the hot path; `stale` counts lookups answered from an expired entry while Postgres is down |
 | `rateguard_degraded_decisions_total` | `mode`: `local`, `open`, `closed` | Decisions made without Redis |
 | `rateguard_redis_errors_total` | | Failed or timed-out bucket calls |
 | `rateguard_redis_breaker_state` | | 0 closed, 1 half-open, 2 open |
