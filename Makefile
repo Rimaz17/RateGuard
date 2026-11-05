@@ -35,6 +35,11 @@ down: ## Stop the stack (keeps the Postgres volume)
 logs: ## Follow logs from every service
 	docker compose logs -f
 
+.PHONY: docs
+docs: ## Serve Swagger UI for api/openapi.yaml on 127.0.0.1:8081
+	docker compose --profile docs up -d --wait swagger-ui
+	@echo "Swagger UI: http://127.0.0.1:$${SWAGGER_UI_HOST_PORT:-8081}"
+
 DEMO_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.demo.yml
 
 .PHONY: demo
@@ -125,8 +130,12 @@ lint: ## Run golangci-lint (must be installed locally)
 lint-docker: ## Run the pinned golangci-lint in Docker, for machines without it
 	docker run --rm -v "$(CURDIR):/src" -w /src golangci/golangci-lint:$(GOLANGCI_LINT_VERSION) golangci-lint run
 
+.PHONY: example-check
+example-check: ## gofmt, vet and race tests for the reference middleware module
+	cd examples/go-middleware && test -z "$$(gofmt -l .)" && go vet ./... && go test -race ./...
+
 .PHONY: check
-check: fmt-check vet lint test ## Everything that must pass before a commit
+check: fmt-check vet lint test example-check ## Everything that must pass before a commit
 
 ## --- Build hygiene ------------------------------------------------------------
 

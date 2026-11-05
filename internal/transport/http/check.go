@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,11 +24,15 @@ const (
 
 // Decider makes rate-limit decisions. *limiter.Service satisfies it.
 type Decider interface {
+	// Check decides a request and takes a token if it is allowed.
 	Check(ctx context.Context, id domain.Identity, method, requestPath string) (limiter.Decision, error)
+
+	// Peek reports what Check would decide, taking nothing.
+	Peek(ctx context.Context, id domain.Identity, method, requestPath string) (limiter.Decision, error)
 }
 
-// checkRequest is the body of POST /v1/check: the request the application
-// received and wants a decision on.
+// checkRequest is the body of POST /v1/check and POST /v1/peek: the request
+// the application received and wants a decision on.
 type checkRequest struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`
@@ -48,9 +53,26 @@ type decisionHandlers struct {
 	decider Decider
 }
 
-// check handles POST /v1/check. It runs behind Identify, so the caller is
-// already known. Nothing here logs unless the decision fails (ADR 0004).
+// check handles POST /v1/check: 200 or 429 (ADR 0015).
 func (h decisionHandlers) check(w http.ResponseWriter, r *http.Request) {
+	h.decide(w, r, h.decider.Check, writeDecision)
+}
+
+// peek handles POST /v1/peek: always 200 when a decision could be made,
+// with allowed saying what a check would do, and no Retry-After since
+// nothing was refused (ADR 0016).
+func (h decisionHandlers) peek(w http.ResponseWriter, r *http.Request) {
+	h.decide(w, r, h.decider.Peek, func(w http.ResponseWriter, d limiter.Decision) {
+		writeDecisionBody(w, http.StatusOK, toDecisionDTO(d))
+	})
+}
+
+// decideFunc is Decider.Check or Decider.Peek.
+type decideFunc func(ctx context.Context, id domain.Identity, method, requestPath string) (limiter.Decision, error)
+
+// decide runs one decision request. It runs behind Identify, so the caller
+// is already known. Nothing here logs unless the decision fails (ADR 0004).
+func (h decisionHandlers) decide(w http.ResponseWriter, r *http.Request, decide decideFunc, write func(http.ResponseWriter, limiter.Decision)) {
 	var req checkRequest
 	if e := decodeJSONLimit(w, r, &req, maxCheckBodyBytes); e != nil {
 		writeError(w, r, e.status, e.message)
@@ -66,10 +88,10 @@ func (h decisionHandlers) check(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d, err := h.decider.Check(r.Context(), id, req.Method, req.Path)
+	d, err := decide(r.Context(), id, req.Method, req.Path)
 	switch {
 	case err == nil:
-		writeDecision(w, d)
+		write(w, d)
 	case errors.Is(err, domain.ErrNoPolicy):
 		writeError(w, r, http.StatusForbidden, "no rate-limit policy applies to this caller")
 	case r.Context().Err() != nil:
@@ -119,22 +141,50 @@ func isToken(s string) bool {
 
 func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 
+// The rate-limit headers (ADR 0016). Each mirrors a body field.
+const (
+	headerLimit      = "X-RateLimit-Limit"
+	headerRemaining  = "X-RateLimit-Remaining"
+	headerReset      = "X-RateLimit-Reset"
+	headerRetryAfter = "Retry-After"
+)
+
 // writeDecision sends a decision: 200 if allowed, 429 if not, with the same
-// body either way (ADR 0015).
+// body either way (ADR 0015) and the rate-limit headers (ADR 0016).
 func writeDecision(w http.ResponseWriter, d limiter.Decision) {
+	body := toDecisionDTO(d)
+	status := http.StatusOK
+	if !d.Allowed {
+		w.Header().Set(headerRetryAfter, strconv.FormatInt(*body.RetryAfter, 10))
+		status = http.StatusTooManyRequests
+	}
+	writeDecisionBody(w, status, body)
+}
+
+// toDecisionDTO rounds a decision's durations up to whole seconds. A
+// refusal always says at least one second.
+func toDecisionDTO(d limiter.Decision) decisionDTO {
 	body := decisionDTO{
 		Allowed:    d.Allowed,
 		Limit:      d.Limit,
 		Remaining:  d.Remaining,
 		ResetAfter: ceilSeconds(d.ResetAfter),
 	}
-	status := http.StatusOK
 	if !d.Allowed {
 		retry := max(ceilSeconds(d.RetryAfter), 1)
 		body.RetryAfter = &retry
-		status = http.StatusTooManyRequests
 	}
-	w.Header().Set("Cache-Control", "no-store")
+	return body
+}
+
+// writeDecisionBody sends the body with the X-RateLimit-* headers that
+// mirror it.
+func writeDecisionBody(w http.ResponseWriter, status int, body decisionDTO) {
+	h := w.Header()
+	h.Set(headerLimit, strconv.Itoa(body.Limit))
+	h.Set(headerRemaining, strconv.Itoa(body.Remaining))
+	h.Set(headerReset, strconv.FormatInt(body.ResetAfter, 10))
+	h.Set("Cache-Control", "no-store")
 	writeJSON(w, status, body)
 }
 

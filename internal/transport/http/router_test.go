@@ -2,6 +2,8 @@ package httptransport_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -93,6 +95,81 @@ func TestMetricsRouteIsAbsentWithoutAHandler(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("GET /metrics without a handler = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestOpenAPIRouteServesTheGivenDocument(t *testing.T) {
+	const spec = "openapi: 3.1.0\ninfo: {title: test, version: '1'}\n"
+	srv := httptest.NewServer(httptransport.NewRouter(httptransport.Deps{Logger: slog.New(slog.DiscardHandler), OpenAPI: spec}))
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/openapi.yaml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != spec || resp.Header.Get("Content-Type") != "application/yaml" {
+		t.Errorf("GET /openapi.yaml = %d %q (%s), want the document as application/yaml", resp.StatusCode, body, resp.Header.Get("Content-Type"))
+	}
+}
+
+func TestRoutingMissesHaveTheStandardErrorBody(t *testing.T) {
+	srv := httptest.NewServer(httptransport.NewRouter(httptransport.Deps{
+		Logger:        slog.New(slog.DiscardHandler),
+		Decider:       &stubDecider{},
+		Authenticator: &stubAuth{valid: validKey},
+		Policies:      &stubPolicies{},
+		AdminToken:    adminToken,
+	}))
+	t.Cleanup(srv.Close)
+
+	tests := []struct {
+		method, path string
+		status       int
+		allow        []string
+	}{
+		{http.MethodGet, "/nope", http.StatusNotFound, nil},
+		{http.MethodGet, "/v1/check", http.StatusMethodNotAllowed, []string{"POST"}},
+		{http.MethodPost, "/healthz", http.StatusMethodNotAllowed, []string{"GET"}},
+		// Inside the admin sub-router, once its authentication has passed.
+		// Without the token these are 401s, so the admin routes stay hidden.
+		{http.MethodPut, "/v1/policies/" + policyFree, http.StatusMethodNotAllowed, []string{"GET", "PATCH", "DELETE"}},
+		{http.MethodGet, "/v1/policies/" + policyFree + "/nope", http.StatusNotFound, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), tt.method, srv.URL+tt.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tt.status {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.status)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("body is not JSON: %v", err)
+			}
+			if body["error"] == "" || body["request_id"] != resp.Header.Get(httptransport.RequestIDHeader) {
+				t.Errorf("body = %v, want the standard error with this request's ID", body)
+			}
+			if got := resp.Header.Values("Allow"); fmt.Sprint(got) != fmt.Sprint(tt.allow) && tt.allow != nil {
+				t.Errorf("Allow = %v, want %v", got, tt.allow)
+			}
+		})
 	}
 }
 

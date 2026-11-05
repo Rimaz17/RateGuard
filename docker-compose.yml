@@ -43,6 +43,8 @@ services:
       RG_REDIS_BREAKER_FAILURES: ${RG_REDIS_BREAKER_FAILURES:-}
       RG_REDIS_BREAKER_COOLDOWN: ${RG_REDIS_BREAKER_COOLDOWN:-}
       RG_INSTANCE_COUNT: ${RG_INSTANCE_COUNT:-}
+      RG_UNIX_SOCKET: ${RG_UNIX_SOCKET:-}
+      RG_UNIX_SOCKET_MODE: ${RG_UNIX_SOCKET_MODE:-}
       RG_READINESS_TIMEOUT: ${RG_READINESS_TIMEOUT:-}
       RG_ADMIN_TOKEN: ${RG_ADMIN_TOKEN:?set RG_ADMIN_TOKEN in .env (see configs/.env.example)}
       RG_TRUSTED_PROXIES: ${RG_TRUSTED_PROXIES:-}
@@ -83,6 +85,21 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+    restart: unless-stopped
+
+  # Swagger UI for api/openapi.yaml, started by `make docs` (the docs profile)
+  # on 127.0.0.1:8081. Documentation only: try-it-out is off, because its
+  # requests to RateGuard would come from another origin.
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.32.0
+    profiles: [docs]
+    environment:
+      SWAGGER_JSON: /spec/openapi.yaml
+      SUPPORTED_SUBMIT_METHODS: "[]"
+    volumes:
+      - ./api/openapi.yaml:/spec/openapi.yaml:ro
+    ports:
+      - "127.0.0.1:${SWAGGER_UI_HOST_PORT:-8081}:8080"
     restart: unless-stopped
 
 volumes:

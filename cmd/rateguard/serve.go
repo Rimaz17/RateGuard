@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Rimaz17/RateGuard/api"
 	"github.com/Rimaz17/RateGuard/internal/client"
 	"github.com/Rimaz17/RateGuard/internal/config"
 	"github.com/Rimaz17/RateGuard/internal/limiter"
@@ -124,6 +125,7 @@ func serve() error {
 		},
 		ReadinessTimeout: cfg.ReadinessTimeout,
 		Metrics:          promhttp.HandlerFor(registry, promhttp.HandlerOpts{}),
+		OpenAPI:          api.OpenAPI(),
 		AdminToken:       cfg.AdminToken.Value(),
 		Clients:          clients,
 		Keys:             clients,
@@ -135,41 +137,37 @@ func serve() error {
 		TrustedProxies:   cfg.TrustedProxies,
 	})
 
-	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           router,
+	tcp, err := listenTCP(ctx, cfg.HTTPAddr)
+	if err != nil {
+		return err
+	}
+	endpoints := []endpoint{{ln: tcp, srv: newHTTPServer(cfg, router, logger)}}
+	if cfg.UnixSocket != "" {
+		sock, err := listenUnix(ctx, cfg.UnixSocket, cfg.UnixSocketMode.Perm())
+		if err != nil {
+			_ = tcp.Close() // the socket error is the one worth reporting
+			return err
+		}
+		// The socket file's permissions vet who connects, so its peers may
+		// say whom they forward for (ADR 0017).
+		srv := newHTTPServer(cfg, router, logger)
+		srv.ConnContext = httptransport.TrustPeer
+		endpoints = append(endpoints, endpoint{ln: sock, srv: srv})
+	}
+	return serveAll(ctx, logger, cfg.ShutdownTimeout, endpoints)
+}
+
+// newHTTPServer returns a server with every timeout set: an unbounded
+// server is a slow-client DoS waiting to happen.
+func newHTTPServer(cfg config.Config, h http.Handler, logger *slog.Logger) *http.Server {
+	return &http.Server{
+		Handler:           h,
 		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		ReadTimeout:       cfg.HTTPReadTimeout,
 		WriteTimeout:      cfg.HTTPWriteTimeout,
 		IdleTimeout:       cfg.HTTPIdleTimeout,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
-
-	serveErr := make(chan error, 1)
-	go func() {
-		logger.Info("http server listening", slog.String("addr", cfg.HTTPAddr))
-		serveErr <- srv.ListenAndServe()
-	}()
-
-	select {
-	case err := <-serveErr:
-		return fmt.Errorf("http server: %w", err)
-	case <-ctx.Done():
-	}
-
-	logger.Info("shutting down", slog.String("timeout", cfg.ShutdownTimeout.String()))
-	// The signal context is already cancelled, so the drain deadline needs a
-	// fresh root; this is main, the one place that may create one.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutting down http server: %w", err)
-	}
-	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("http server: %w", err)
-	}
-	logger.Info("stopped")
-	return nil
 }
 
 // background runs loop on its own goroutine until ctx ends or the returned

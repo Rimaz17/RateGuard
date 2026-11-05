@@ -72,6 +72,55 @@ func TestClientIPWithoutAnAddress(t *testing.T) {
 	}
 }
 
+// A Unix-socket peer has no address, but a trusted one may say whom it is
+// forwarding for (ADR 0017).
+func TestClientIPFromATrustedSocketPeer(t *testing.T) {
+	lb := proxies(t, "10.0.0.0/8")
+	tests := []struct {
+		name    string
+		xff     []string
+		trusted httptransport.TrustedProxies
+		want    string // "" means no address
+	}{
+		{"the application's entry is the caller", []string{"198.51.100.9"}, nil, "198.51.100.9"},
+		{"entries left of it are the caller's own", []string{"6.6.6.6, 198.51.100.9"}, nil, "198.51.100.9"},
+		{"the application's own proxy is walked past", []string{"198.51.100.9, 10.1.1.1"}, lb, "198.51.100.9"},
+		{"ipv4-mapped entry is unwrapped", []string{"::ffff:198.51.100.9"}, nil, "198.51.100.9"},
+		{"no header, no address", nil, nil, ""},
+		{"only garbage, no address", []string{"not-an-ip"}, nil, ""},
+		{"only trusted hops ends on the last of them", []string{"10.3.3.3, 10.1.1.1"}, lb, "10.3.3.3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := httptransport.TrustPeer(t.Context(), nil)
+			r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/", nil)
+			r.RemoteAddr = "@"
+			for _, v := range tt.xff {
+				r.Header.Add("X-Forwarded-For", v)
+			}
+			got, ok := httptransport.ClientIP(r, tt.trusted)
+			if tt.want == "" {
+				if ok {
+					t.Errorf("ClientIP = %v, true; want no address", got)
+				}
+				return
+			}
+			if !ok || got != netip.MustParseAddr(tt.want) {
+				t.Errorf("ClientIP = %v, %v; want %s, true", got, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestClientIPIgnoresTheHeaderFromAnUntrustedSocketPeer(t *testing.T) {
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
+	r.RemoteAddr = "@"
+	r.Header.Set("X-Forwarded-For", "198.51.100.9")
+	if got, ok := httptransport.ClientIP(r, nil); ok {
+		t.Errorf("ClientIP without TrustPeer = %v, true; want no address", got)
+	}
+}
+
 func TestClientIPBoundsTheWalk(t *testing.T) {
 	lb := proxies(t, "10.0.0.0/8")
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)

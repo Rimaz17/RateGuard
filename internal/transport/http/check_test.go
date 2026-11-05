@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -37,6 +38,14 @@ func (s *stubDecider) Check(_ context.Context, id domain.Identity, method, path 
 	return s.decision, s.err
 }
 
+func (s *stubDecider) Peek(_ context.Context, id domain.Identity, method, path string) (limiter.Decision, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.asked = append(s.asked, "peek "+method+" "+path)
+	s.ids = append(s.ids, id)
+	return s.decision, s.err
+}
+
 type checkServer struct {
 	srv     *httptest.Server
 	decider *stubDecider
@@ -63,7 +72,12 @@ type reply struct {
 
 func (c *checkServer) post(t *testing.T, key, body string) (reply, []byte) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.srv.URL+"/v1/check", strings.NewReader(body))
+	return c.postTo(t, "/v1/check", key, body)
+}
+
+func (c *checkServer) postTo(t *testing.T, path, key, body string) (reply, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.srv.URL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +139,67 @@ func TestCheckRefused(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(body)); got != `{"allowed":false,"limit":100,"remaining":0,"reset_after":12,"retry_after":12}` {
 		t.Errorf("body = %s, want the overview's rejected shape", got)
+	}
+}
+
+func TestCheckSendsTheRateLimitHeaders(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision limiter.Decision
+		status   int
+		want     map[string]string
+	}{
+		{
+			name:     "allowed",
+			decision: limiter.Decision{Allowed: true, Limit: 100, Remaining: 72, ResetAfter: 17*time.Second + time.Millisecond},
+			status:   http.StatusOK,
+			want:     map[string]string{"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "72", "X-RateLimit-Reset": "18", "Retry-After": ""},
+		},
+		{
+			name:     "refused",
+			decision: limiter.Decision{Allowed: false, Limit: 100, ResetAfter: 11500 * time.Millisecond, RetryAfter: 400 * time.Millisecond},
+			status:   http.StatusTooManyRequests,
+			want:     map[string]string{"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "12", "Retry-After": "1"},
+		},
+		{
+			name:     "full bucket resets in zero",
+			decision: limiter.Decision{Allowed: true, Limit: 5, Remaining: 5},
+			status:   http.StatusOK,
+			want:     map[string]string{"X-RateLimit-Limit": "5", "X-RateLimit-Remaining": "5", "X-RateLimit-Reset": "0"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newCheckServer(t, &stubDecider{decision: tt.decision})
+			resp, body := c.post(t, validKey, productsBody)
+			if resp.StatusCode != tt.status {
+				t.Fatalf("status = %d %s, want %d", resp.StatusCode, body, tt.status)
+			}
+			for h, want := range tt.want {
+				if got := resp.Header.Get(h); got != want {
+					t.Errorf("%s = %q, want %q", h, got, want)
+				}
+			}
+			// The headers and the body must never disagree (ADR 0016).
+			m := decodeObject(t, body)
+			if fmt.Sprint(m["reset_after"]) != resp.Header.Get("X-RateLimit-Reset") ||
+				fmt.Sprint(m["remaining"]) != resp.Header.Get("X-RateLimit-Remaining") {
+				t.Errorf("headers %v disagree with body %s", resp.Header, body)
+			}
+			if r, ok := m["retry_after"]; ok && fmt.Sprint(r) != resp.Header.Get("Retry-After") {
+				t.Errorf("Retry-After %q disagrees with retry_after %v", resp.Header.Get("Retry-After"), r)
+			}
+		})
+	}
+}
+
+func TestCheckErrorsCarryNoRateLimitHeaders(t *testing.T) {
+	c := newCheckServer(t, &stubDecider{err: domain.ErrNoPolicy})
+	resp, _ := c.post(t, validKey, productsBody)
+	for _, h := range []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"} {
+		if v := resp.Header.Get(h); v != "" {
+			t.Errorf("a 403 carries %s = %q; there is no limit to report", h, v)
+		}
 	}
 }
 
@@ -230,6 +305,50 @@ func TestCheckLogsNothingForDecisions(t *testing.T) {
 		if c.logs.Len() != 0 {
 			t.Errorf("%s decision logged %q; the hot path must not log (ADR 0004)", name, c.logs.String())
 		}
+	}
+}
+
+func TestPeekReportsWithoutTaking(t *testing.T) {
+	c := newCheckServer(t, &stubDecider{decision: limiter.Decision{Allowed: true, Limit: 100, Remaining: 40, ResetAfter: 36 * time.Second}})
+	resp, body := c.postTo(t, "/v1/peek", validKey, productsBody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d %s, want 200", resp.StatusCode, body)
+	}
+	if got := strings.TrimSpace(string(body)); got != `{"allowed":true,"limit":100,"remaining":40,"reset_after":36}` {
+		t.Errorf("body = %s", got)
+	}
+	if resp.Header.Get("X-RateLimit-Remaining") != "40" || resp.Header.Get("X-RateLimit-Reset") != "36" {
+		t.Errorf("headers = %v, want the X-RateLimit-* headers", resp.Header)
+	}
+	if len(c.decider.asked) != 1 || c.decider.asked[0] != "peek GET /api/products" {
+		t.Errorf("decider was asked %v, want one peek and no check", c.decider.asked)
+	}
+}
+
+func TestPeekOfAnEmptyBucketIsStill200(t *testing.T) {
+	c := newCheckServer(t, &stubDecider{decision: limiter.Decision{Allowed: false, Limit: 100, ResetAfter: time.Minute, RetryAfter: 600 * time.Millisecond}})
+	resp, body := c.postTo(t, "/v1/peek", validKey, productsBody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d %s, want 200: the peek succeeded, nothing was refused", resp.StatusCode, body)
+	}
+	if got := strings.TrimSpace(string(body)); got != `{"allowed":false,"limit":100,"remaining":0,"reset_after":60,"retry_after":1}` {
+		t.Errorf("body = %s, want allowed false with retry_after", got)
+	}
+	if v := resp.Header.Get("Retry-After"); v != "" {
+		t.Errorf("Retry-After = %q on a peek, want none (ADR 0016)", v)
+	}
+}
+
+func TestPeekSharesTheCheckContract(t *testing.T) {
+	c := newCheckServer(t, &stubDecider{err: domain.ErrNoPolicy})
+	if resp, _ := c.postTo(t, "/v1/peek", validKey, productsBody); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("peek with no policy = %d, want 403", resp.StatusCode)
+	}
+	if resp, _ := c.postTo(t, "/v1/peek", validKey, `{"method":"GET","path":"/a?b"}`); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("peek with a query string = %d, want 400", resp.StatusCode)
+	}
+	if resp, _ := c.postTo(t, "/v1/peek", "rg_cus_aaaaaaaaaaaaaaaa_"+strings.Repeat("z", 52), productsBody); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("peek with a bad key = %d, want 401", resp.StatusCode)
 	}
 }
 

@@ -62,11 +62,40 @@ jobs:
       - name: go test -race -tags integration
         run: make test-integration
 
+  example:
+    name: reference middleware module (examples/go-middleware)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/go-middleware
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: examples/go-middleware/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          working-directory: examples/go-middleware
+      - name: go build
+        run: go build ./...
+      # TestE2E skips here; the container job runs it against the stack.
+      - name: go test (race)
+        run: go test -race ./...
+
   container:
     name: image and compose smoke test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: examples/go-middleware/go.mod
       - name: go version matches Dockerfile
         run: make check-go-version
       - name: docker build
@@ -116,6 +145,31 @@ jobs:
           metrics="$(curl -fsS "$base/metrics")"
           echo "$metrics" | grep -qx 'rateguard_degraded_decisions_total{mode="local"} 0'
           echo "$metrics" | grep -qx 'rateguard_redis_breaker_state 0'
+      - name: rate-limit headers, peek, openapi document and json routing misses
+        run: |
+          base=http://127.0.0.1:8080
+          token="$(sed -n 's/^RG_ADMIN_TOKEN=//p' .env)"
+          key="$(curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"name":"CI headers"}' "$base/v1/clients" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')"
+          headers="$(curl -fsS -D - -o /dev/null -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d '{"method":"GET","path":"/"}' "$base/v1/check" | tr -d '\r')"
+          echo "$headers"
+          echo "$headers" | grep -qx 'X-Ratelimit-Limit: 100'
+          echo "$headers" | grep -qx 'X-Ratelimit-Remaining: 99'
+          echo "$headers" | grep -qx 'X-Ratelimit-Reset: 1'
+          curl -fsS -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d '{"method":"GET","path":"/"}' "$base/v1/peek" | grep -q '"allowed":true,"limit":100'
+          curl -fsS "$base/openapi.yaml" | head -1 | grep -q '^openapi: 3.1'
+          curl -s "$base/no-such-route" | grep -q '"request_id"'
+      - name: reference middleware against the stack (examples/go-middleware TestE2E)
+        run: |
+          base=http://127.0.0.1:8080
+          token="$(sed -n 's/^RG_ADMIN_TOKEN=//p' .env)"
+          policy_id="$(curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"name":"CI E2E","capacity":3,"window_seconds":3600}' "$base/v1/policies" | sed -n 's/^{"id":"\([^"]*\)".*/\1/p')"
+          reg="$(curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"name":"CI E2E"}' "$base/v1/clients")"
+          client_id="$(echo "$reg" | sed -n 's/^{"client":{"id":"\([^"]*\)".*/\1/p')"
+          key="$(echo "$reg" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')"
+          curl -fsS -o /dev/null -X PUT -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "{\"policy_id\":\"$policy_id\"}" "$base/v1/clients/$client_id/policy"
+          cd examples/go-middleware
+          RATEGUARD_URL="$base" RATEGUARD_API_KEY="$key" RATEGUARD_LIMIT=3 go test -race -count=1 -run TestE2E -v ./ | tee e2e.log
+          grep -q -- '--- PASS: TestE2E' e2e.log
       - name: migrate down one step and back up through the binary
         run: make migrate-down && make migrate-up
       - name: readiness flips when postgres stops, and recovers

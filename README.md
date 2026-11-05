@@ -8,14 +8,16 @@ bucket shared across every RateGuard instance through Redis. Rate limiting lives
 service instead of being re-implemented in every application, and any language that can
 make an HTTP call can use it.
 
-> **Status: phase 5 (distribution via Redis).** The service runs in Docker Compose next to
-> Postgres and Redis, with an admin API to register applications, rotate their API keys,
-> and manage policies, endpoint rules and plan assignments. `POST /v1/check` decides
-> requests against token buckets shared by every instance through an atomic Lua script in
-> Redis. If Redis fails, a circuit breaker degrades decisions to a local bucket per
-> instance, never to unlimited, and `GET /metrics` shows it. Rate-limit headers,
-> `/v1/peek`, Swagger UI, a Unix-socket listener and a reference middleware come in
-> phase 6.
+> **Status: phase 6 (response contract and integration).** The service runs in Docker
+> Compose next to Postgres and Redis, with an admin API to register applications, rotate
+> their API keys, and manage policies, endpoint rules and plan assignments.
+> `POST /v1/check` decides requests against token buckets shared by every instance
+> through an atomic Lua script in Redis, and answers with the standard `X-RateLimit-*`
+> and `Retry-After` headers. If Redis fails, a circuit breaker degrades decisions to a
+> local bucket per instance, never to unlimited, and `GET /metrics` shows it. RateGuard
+> can also run as a sidecar on a Unix socket, and a reference Go middleware integrates a
+> service in five lines. Usage analytics, the remaining metrics and the published latency
+> figures come in phase 7.
 
 ## Architecture
 
@@ -101,6 +103,8 @@ ones that only Docker Compose reads.
 | `RG_REDIS_FAILURE_MODE` | `local` | While Redis is unreachable: `local` (in-memory bucket per instance), `open` (allow all) or `closed` (refuse all) ([ADR 0014](docs/adr/0014-degraded-decisions.md)) |
 | `RG_REDIS_BREAKER_FAILURES` | `5` | Consecutive failed bucket operations that open the circuit breaker (at least 1) |
 | `RG_REDIS_BREAKER_COOLDOWN` | `5s` | How long the breaker stays open before one request probes Redis again |
+| `RG_UNIX_SOCKET` | *(empty)* | Absolute path of a Unix socket to also serve on, for sidecars; empty means TCP only ([ADR 0017](docs/adr/0017-unix-socket-for-sidecars.md)) |
+| `RG_UNIX_SOCKET_MODE` | `0660` | Octal permission of the socket file; its peers are trusted to set `X-Forwarded-For` |
 | `RG_INSTANCE_COUNT` | `1` | Instances sharing the traffic; local buckets hold `capacity / RG_INSTANCE_COUNT` while Redis is down |
 | `RG_READINESS_TIMEOUT` | `2s` | Per-dependency timeout for the `/readyz` checks |
 | `RG_TRUSTED_PROXIES` | *(empty)* | Comma-separated CIDRs whose `X-Forwarded-For` is believed for IP identification; empty trusts none |
@@ -124,12 +128,15 @@ invalid.
 | `PUT /v1/clients/{id}/policy` | Assign a policy to an application, or remove it with `null` | Available |
 | `POST /v1/check` | Rate-limit decision: takes a token, answers 200 or 429 ([ADR 0015](docs/adr/0015-decision-endpoint.md)) | Available |
 | `GET /metrics` | Prometheus scrape: degraded decisions, Redis errors, breaker state | Available (more in phase 7) |
-| `POST /v1/peek` | Report the allowance without taking a token | Phase 6 |
+| `POST /v1/peek` | Report the allowance without taking a token ([ADR 0016](docs/adr/0016-rate-limit-headers-and-peek.md)) | Available |
+| `GET /openapi.yaml` | The OpenAPI document this binary was built with | Available |
 | `GET /v1/analytics/usage` | Usage analytics | Phase 7 |
 
 The `/v1/clients` and `/v1/policies` routes require `Authorization: Bearer <RG_ADMIN_TOKEN>`
-([ADR 0008](docs/adr/0008-admin-api-bearer-token.md)). Every error response is
-`{"error": "...", "request_id": "..."}`, and never carries internal detail.
+([ADR 0008](docs/adr/0008-admin-api-bearer-token.md)). Every error response, routing
+misses included, is `{"error": "...", "request_id": "..."}`, and never carries internal
+detail; a 405 also lists the accepted methods in `Allow`. `make docs` serves Swagger UI
+for the contract on `127.0.0.1:8081` (read-only: try-it-out is off).
 
 Every response carries an `X-Request-ID` header. An inbound `X-Request-ID` is reused if
 it is at most 64 characters of `[A-Za-z0-9._-]`; otherwise RateGuard generates a new one.
@@ -226,7 +233,18 @@ curl -s -w ' %{http_code}\n' -H "Authorization: Bearer $KEY" -H 'Content-Type: a
 ```
 
 The status is the answer: 200 to serve the request, 429 to refuse it. Durations are whole
-seconds, rounded up. A bad key is a 401, never a quiet fallback to IP, and a caller with
+seconds, rounded up. Both carry headers your service can copy onto its own response
+unchanged ([ADR 0016](docs/adr/0016-rate-limit-headers-and-peek.md)):
+
+| Header | Value |
+|---|---|
+| `X-RateLimit-Limit` | `limit` |
+| `X-RateLimit-Remaining` | `remaining` |
+| `X-RateLimit-Reset` | `reset_after`: seconds until the bucket is full again, not a timestamp |
+| `Retry-After` | On 429 only: `retry_after`, at least 1 |
+
+`POST /v1/peek` takes the same body and reports the same fields without taking a token.
+It always answers 200, with `allowed` saying what a check would do. A bad key is a 401, never a quiet fallback to IP, and a caller with
 no applicable policy gets a 403. Send the path only: a query string or fragment is
 refused, because `/api/login?x` would otherwise escape a rule on `/api/login`. Without a
 key, the caller is identified by IP, so an application that wants per-IP limits appends
@@ -237,6 +255,40 @@ A decision reads no database. Policies and API keys come from in-process caches 
 sync over Redis pub/sub ([ADR 0005](docs/adr/0005-policy-cache-ttl-pubsub-singleflight.md),
 [ADR 0012](docs/adr/0012-api-key-cache-on-the-hot-path.md)), and a revoked key stops
 working on every instance within milliseconds.
+
+### Integrating from Go
+
+[examples/go-middleware](examples/go-middleware) is a reference `net/http` middleware,
+in a module of its own with no dependencies beyond the standard library:
+
+```go
+rg, err := rateguard.New(os.Getenv("RATEGUARD_URL"))
+if err != nil {
+	log.Fatal(err)
+}
+handler := rg.Middleware(mux)
+```
+
+It forwards each request's method, decoded path, `Authorization` header and address,
+keeps a pool of keep-alive connections to RateGuard, copies the rate-limit headers onto
+your responses, and answers 429 itself when RateGuard refuses. If RateGuard cannot be
+reached it answers 503, unless you choose `WithFailOpen()`. The
+[sample app](examples/go-middleware/sampleapp/main.go) is a complete service built this
+way, and CI runs the middleware against the real stack.
+
+### Sidecar deployment
+
+Set `RG_UNIX_SOCKET` to an absolute path, and RateGuard also serves its whole API on that
+Unix socket, alongside TCP ([ADR 0017](docs/adr/0017-unix-socket-for-sidecars.md)). The
+file is created with `RG_UNIX_SOCKET_MODE` (`0660` by default). A stale socket left by a
+crash is replaced, but a live socket or any other file at that path stops startup
+untouched, and the file is removed on shutdown. Point the middleware at it with
+`rateguard.New("unix:///run/rateguard/rateguard.sock")`.
+
+Over the socket, a caller without an API key is identified by the address the
+application adds to `X-Forwarded-For`, because only processes the file's permissions let
+in can connect. Keep the mode tight for that reason. Phase 7 publishes the latency of
+both topologies.
 
 ### Shared buckets in Redis
 
@@ -377,9 +429,11 @@ to at least 90% statement coverage; the integration suite, which
 includes a migrations up/down/up round trip on a fresh database; and an image build
 followed by `make up`, `make smoke`, checks of the admin API (clients, then a policy
 with a rule assigned to a client, and the instance's subscription to policy changes), a
-decision through `/v1/check` with its bucket in Redis and `/metrics`, a migrate down and
-up through the binary, and a check that `/readyz` turns 503 when Postgres stops and 200
-when it returns; and `make demo`, the three-instance demo above.
+decision through `/v1/check` with its bucket in Redis and `/metrics`, the rate-limit
+headers, a peek, `/openapi.yaml` and a JSON 404, the Go middleware's end-to-end test, a
+migrate down and up through the binary, and a check that `/readyz` turns 503 when
+Postgres stops and 200 when it returns; the middleware module's own format, vet, lint
+and race tests; and `make demo`, the three-instance demo above.
 
 ### Layout
 
@@ -395,7 +449,9 @@ internal/limiter/scripts  the refill-and-consume Lua script
 internal/storage/postgres pgx pool, repositories and the migrator
 internal/transport/http   chi router, handlers and middleware (package httptransport)
 migrations/               numbered SQL migrations, embedded in the binary
-api/openapi.yaml          the HTTP contract
+api/                      the HTTP contract (openapi.yaml), embedded and served by the binary
+examples/go-middleware/   reference Go middleware and sample app (a module of its own)
+scripts/                  the distributed demo and its nginx config
 test/integration/         testcontainers suite (build tag: integration)
 docs/                     data model and architecture decision records
 ```

@@ -21,6 +21,8 @@ decision itself and its consequences. ADRs 0001–0006 are the six binding decis
 | [0013](0013-redis-bucket-store.md) | The Redis bucket store: key layout, script and expiry |
 | [0014](0014-degraded-decisions.md) | Degraded decisions when Redis fails: breaker, local buckets, metrics and logging |
 | [0015](0015-decision-endpoint.md) | The decision endpoint: request, statuses and response body |
+| [0016](0016-rate-limit-headers-and-peek.md) | Rate-limit headers, the peek endpoint and error bodies |
+| [0017](0017-unix-socket-for-sidecars.md) | A Unix socket for sidecar deployment |
 
 New ADRs take the next number. To change an accepted ADR, mark it superseded and write
 a new one rather than editing it in place.

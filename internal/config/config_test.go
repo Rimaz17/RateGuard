@@ -3,6 +3,7 @@ package config_test
 import (
 	"log/slog"
 	"net/netip"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -49,7 +50,8 @@ func TestLoadDefaults(t *testing.T) {
 			MaxConnLifetime: 30 * time.Minute,
 			MaxConnIdleTime: 5 * time.Minute,
 		},
-		InstanceCount: 1,
+		InstanceCount:  1,
+		UnixSocketMode: 0o660,
 		Redis: config.Redis{
 			URL:             "redis://localhost:6379/0",
 			Timeout:         100 * time.Millisecond,
@@ -170,6 +172,11 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"zero breaker failures", "RG_REDIS_BREAKER_FAILURES", "0", "RG_REDIS_BREAKER_FAILURES must be at least 1"},
 		{"negative breaker failures", "RG_REDIS_BREAKER_FAILURES", "-1", "parsing environment"},
 		{"zero breaker cooldown", "RG_REDIS_BREAKER_COOLDOWN", "0s", "RG_REDIS_BREAKER_COOLDOWN must be positive"},
+		{"relative socket path", "RG_UNIX_SOCKET", "run/rateguard.sock", "RG_UNIX_SOCKET must be an absolute path"},
+		{"socket path too long", "RG_UNIX_SOCKET", "/" + strings.Repeat("s", 104), "RG_UNIX_SOCKET must be at most 104 bytes, got 105"},
+		{"socket mode not octal", "RG_UNIX_SOCKET_MODE", "0698", "parsing environment"},
+		{"socket mode beyond permissions", "RG_UNIX_SOCKET_MODE", "4777", "parsing environment"},
+		{"socket mode in words", "RG_UNIX_SOCKET_MODE", "rw-rw----", "parsing environment"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -184,6 +191,24 @@ func TestLoadRejectsInvalid(t *testing.T) {
 				t.Errorf("Load() error = %q, want it to contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadUnixSocket(t *testing.T) {
+	setRequired(t)
+	path, err := filepath.Abs("rateguard.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RG_UNIX_SOCKET", path)
+	t.Setenv("RG_UNIX_SOCKET_MODE", "600")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if cfg.UnixSocket != path || cfg.UnixSocketMode.Perm() != 0o600 {
+		t.Errorf("socket = %q mode %o, want %q mode 600", cfg.UnixSocket, cfg.UnixSocketMode.Perm(), path)
 	}
 }
 

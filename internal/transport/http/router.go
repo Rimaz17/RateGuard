@@ -26,6 +26,10 @@ type Deps struct {
 	// route is not mounted.
 	Metrics http.Handler
 
+	// OpenAPI is the contract served on GET /openapi.yaml. When empty, the
+	// route is not mounted.
+	OpenAPI string
+
 	// AdminToken guards every admin route (ADR 0008). Empty locks them
 	// all: no presented token can match it.
 	AdminToken string
@@ -50,13 +54,29 @@ type Deps struct {
 	// alongside Clients.
 	Assigner PolicyAssigner
 
-	// Decider serves POST /v1/check, the hot path. It is mounted only when
-	// Authenticator is set too, which identifies callers by API key;
-	// callers without one are identified by IP, trusting X-Forwarded-For
-	// only from TrustedProxies.
+	// Decider serves POST /v1/check and /v1/peek, the hot path. They are
+	// mounted only when Authenticator is set too, which identifies callers
+	// by API key; callers without one are identified by IP, trusting
+	// X-Forwarded-For only from TrustedProxies.
 	Decider        Decider
 	Authenticator  Authenticator
 	TrustedProxies TrustedProxies
+}
+
+// routeMethods are the methods a 405's Allow header can list.
+var routeMethods = []string{
+	http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+	http.MethodPatch, http.MethodDelete, http.MethodOptions,
+}
+
+// allowMethods sets the Allow header to the methods mux routes for path. A
+// custom 405 handler is not told them, so they are found by asking the mux.
+func allowMethods(w http.ResponseWriter, mux *chi.Mux, path string) {
+	for _, m := range routeMethods {
+		if mux.Match(chi.NewRouteContext(), m, path) {
+			w.Header().Add("Allow", m)
+		}
+	}
 }
 
 // NewRouter builds the HTTP handler for the whole service.
@@ -64,6 +84,15 @@ func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(RequestID)
 	r.Use(Recoverer(d.Logger))
+	// Routing misses get the standard error body like every other error
+	// (ADR 0016). Set first, so every sub-router inherits them.
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		writeError(w, req, http.StatusNotFound, "no such route")
+	})
+	r.MethodNotAllowed(func(w http.ResponseWriter, req *http.Request) {
+		allowMethods(w, r, req.URL.Path)
+		writeError(w, req, http.StatusMethodNotAllowed, "method not allowed; the Allow header lists the methods this path accepts")
+	})
 
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(d.Logger, d.Readiness, d.ReadinessTimeout))
@@ -73,9 +102,21 @@ func NewRouter(d Deps) http.Handler {
 		r.Method(http.MethodGet, "/metrics", d.Metrics)
 	}
 
+	if d.OpenAPI != "" {
+		spec := []byte(d.OpenAPI)
+		r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+			// application/yaml is the registered type (RFC 9512).
+			w.Header().Set("Content-Type", "application/yaml")
+			w.Header().Set("Cache-Control", "no-cache")
+			_, _ = w.Write(spec) // a failed write means the client left
+		})
+	}
+
 	if d.Decider != nil && d.Authenticator != nil {
 		dh := decisionHandlers{logger: d.Logger, decider: d.Decider}
-		r.With(Identify(d.Logger, d.Authenticator, d.TrustedProxies)).Post("/v1/check", dh.check)
+		identify := Identify(d.Logger, d.Authenticator, d.TrustedProxies)
+		r.With(identify).Post("/v1/check", dh.check)
+		r.With(identify).Post("/v1/peek", dh.peek)
 	}
 
 	if d.Clients != nil {
