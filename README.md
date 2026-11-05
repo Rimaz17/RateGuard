@@ -85,6 +85,12 @@ curl -i http://127.0.0.1:8080/readyz
 **Next:** the [guide](docs/guide.md) covers key rotation, plans and endpoint rules, the
 decision contract, the Go middleware, sidecars, analytics and observability.
 
+**Testing guide:** [docs/RateGuard-Testing-Guide.pdf](docs/RateGuard-Testing-Guide.pdf)
+is a step-by-step guide to testing every feature on Windows with Postman: setup for a
+first-time Go user, then each request to send and the result to expect, the Redis and
+Postgres failure tests, and the automated test commands. Its source is
+[docs/testing-guide.html](docs/testing-guide.html).
+
 ## Configuration
 
 RateGuard reads `RG_`-prefixed environment variables. A variable that is set but empty
