@@ -61,6 +61,13 @@ If your `.env` predates phase 2, add `RG_ADMIN_TOKEN` to it (see
 applies the schema before RateGuard starts
 ([ADR 0007](docs/adr/0007-migrations-run-as-a-separate-step.md)).
 
+To see the shared limit across instances, `make demo` starts three RateGuard instances
+behind an nginx load balancer on `127.0.0.1:8090` and runs
+[scripts/demo-distributed.sh](scripts/demo-distributed.sh): 300 concurrent requests for a
+client limited to 100 (exactly 100 are allowed), then Redis is stopped (every request is
+still decided, from local buckets) and started again (the circuit breakers close).
+`make demo-down` stops it.
+
 Without `make` (on Windows, for example), run the equivalent commands directly:
 
 ```bash
@@ -370,8 +377,9 @@ to at least 90% statement coverage; the integration suite, which
 includes a migrations up/down/up round trip on a fresh database; and an image build
 followed by `make up`, `make smoke`, checks of the admin API (clients, then a policy
 with a rule assigned to a client, and the instance's subscription to policy changes), a
-migrate down and up through the binary, and a check that `/readyz` turns 503 when
-Postgres stops and 200 when it returns.
+decision through `/v1/check` with its bucket in Redis and `/metrics`, a migrate down and
+up through the binary, and a check that `/readyz` turns 503 when Postgres stops and 200
+when it returns; and `make demo`, the three-instance demo above.
 
 ### Layout
 
