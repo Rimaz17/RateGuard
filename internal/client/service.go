@@ -27,15 +27,25 @@ type KeyStore interface {
 	Revoke(ctx context.Context, clientID, keyID string) (domain.APIKey, error)
 }
 
-// Service registers clients and manages the lifecycle of their keys.
-type Service struct {
-	clients Store
-	keys    KeyStore
+// Notifier tells every instance that a client's cached data, such as its
+// API keys, is stale (ADR 0012). It is called after a write has committed
+// and does not fail it: an instance that misses the notice catches up
+// within the cache TTL. *policy.Broadcaster satisfies it.
+type Notifier interface {
+	NotifyClient(ctx context.Context, clientID string)
 }
 
-// New returns a Service on the given stores.
-func New(clients Store, keys KeyStore) *Service {
-	return &Service{clients: clients, keys: keys}
+// Service registers clients and manages the lifecycle of their keys.
+type Service struct {
+	clients  Store
+	keys     KeyStore
+	notifier Notifier
+}
+
+// New returns a Service on the given stores that announces revocations
+// through notifier.
+func New(clients Store, keys KeyStore, notifier Notifier) *Service {
+	return &Service{clients: clients, keys: keys, notifier: notifier}
 }
 
 // Register creates a client and issues its first key. The returned
@@ -110,12 +120,14 @@ func (s *Service) ListKeys(ctx context.Context, clientID string) ([]domain.APIKe
 }
 
 // RevokeKey revokes one of the client's keys; requests using it fail from
-// then on. Revoking an already revoked key succeeds and changes nothing.
+// then on, on every instance, once the revocation notice reaches it.
+// Revoking an already revoked key succeeds and changes nothing.
 func (s *Service) RevokeKey(ctx context.Context, clientID, keyID string) (domain.APIKey, error) {
 	k, err := s.keys.Revoke(ctx, clientID, keyID)
 	if err != nil {
 		return domain.APIKey{}, fmt.Errorf("revoking key: %w", err)
 	}
+	s.notifier.NotifyClient(ctx, clientID)
 	return k, nil
 }
 

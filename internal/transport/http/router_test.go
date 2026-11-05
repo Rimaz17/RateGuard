@@ -55,6 +55,47 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestMetricsRouteServesTheGivenHandler(t *testing.T) {
+	srv := httptest.NewServer(httptransport.NewRouter(httptransport.Deps{
+		Logger: slog.New(slog.DiscardHandler),
+		Metrics: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("rateguard_redis_breaker_state 0\n"))
+		}),
+	}))
+	t.Cleanup(srv.Close)
+
+	for method, want := range map[string]int{http.MethodGet: http.StatusOK, http.MethodPost: http.StatusMethodNotAllowed} {
+		req, err := http.NewRequestWithContext(t.Context(), method, srv.URL+"/metrics", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s /metrics: %v", method, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("%s /metrics = %d, want %d", method, resp.StatusCode, want)
+		}
+	}
+}
+
+func TestMetricsRouteIsAbsentWithoutAHandler(t *testing.T) {
+	srv := newTestServer(t)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /metrics without a handler = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestRoutingMisses(t *testing.T) {
 	tests := []struct {
 		name   string

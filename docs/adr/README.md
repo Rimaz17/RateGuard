@@ -17,6 +17,10 @@ decision itself and its consequences. ADRs 0001–0006 are the six binding decis
 | [0009](0009-policy-resolution-and-default-policy.md) | How a request's policy is resolved, and the default policy |
 | [0010](0010-endpoint-rule-matching-and-precedence.md) | Endpoint rule matching and precedence |
 | [0011](0011-token-bucket-semantics.md) | Token bucket semantics |
+| [0012](0012-api-key-cache-on-the-hot-path.md) | API key lookups are cached in process |
+| [0013](0013-redis-bucket-store.md) | The Redis bucket store: key layout, script and expiry |
+| [0014](0014-degraded-decisions.md) | Degraded decisions when Redis fails: breaker, local buckets, metrics and logging |
+| [0015](0015-decision-endpoint.md) | The decision endpoint: request, statuses and response body |
 
 New ADRs take the next number. To change an accepted ADR, mark it superseded and write
 a new one rather than editing it in place.

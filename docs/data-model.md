@@ -95,3 +95,38 @@ A full key looks like `rg_cus_7hq2mfx4kd5ta3wb_<52 base32 chars>`:
 
 Only the part up to and including the 16 random characters is ever logged or shown
 again.
+
+## Redis
+
+Redis holds nothing that cannot be lost: losing it refills every bucket and costs a
+flush of every instance's caches.
+
+### Bucket state
+
+One hash per bucket in use ([ADR 0013](adr/0013-redis-bucket-store.md)), under a key
+that only `keyFor` in `internal/limiter` builds:
+
+```
+rg:bucket:<scope>:<caller>
+  scope   all (the policy's own limit) or an endpoint rule's ID
+  caller  client:<client-id>, ip:<IPv4 address> or ip:<IPv6 network>/64
+```
+
+| Field | Value |
+|---|---|
+| `tokens` | The balance as of the last refill, as a decimal with 17 significant digits |
+| `last_refill_us` | Redis's own clock (`TIME`) at the last refill, in microseconds |
+
+Microseconds are used rather than the overview's milliseconds so the stored time has
+the resolution of the clock the script reads. Only an allowed take writes the hash; a
+refusal or a peek leaves it alone. Each write sets `PEXPIRE` to the time until the
+bucket is full again, so a key disappears once it would decide like a new bucket. The
+policy is not part of the key, so a client keeps its balance when its plan changes.
+
+### Invalidation channel
+
+`rg:policy:invalidate` carries `client:<id>` (an assignment changed or a key was
+revoked) and `policy:<id>` (a policy, its rules or the default flag changed). Every
+instance subscribes and drops the matching cache entries
+([ADR 0005](adr/0005-policy-cache-ttl-pubsub-singleflight.md),
+[ADR 0012](adr/0012-api-key-cache-on-the-hot-path.md)).

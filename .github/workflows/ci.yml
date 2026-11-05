@@ -100,6 +100,22 @@ jobs:
           subscribers="$(docker compose exec -T redis redis-cli PUBSUB NUMSUB rg:policy:invalidate | tail -n 1)"
           echo "subscribers on rg:policy:invalidate: $subscribers"
           test "$subscribers" = 1
+      - name: decision endpoint decides, refuses query strings, and metrics are served
+        run: |
+          base=http://127.0.0.1:8080
+          token="$(sed -n 's/^RG_ADMIN_TOKEN=//p' .env)"
+          key="$(curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"name":"CI decide"}' "$base/v1/clients" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')"
+          test -n "$key"
+          decision="$(curl -fsS -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d '{"method":"GET","path":"/api/products"}' "$base/v1/check")"
+          echo "$decision"
+          echo "$decision" | grep -q '"allowed":true,"limit":100,"remaining":99'
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d '{"method":"GET","path":"/api/login?x=1"}' "$base/v1/check")"
+          echo "path with a query string: $code"
+          test "$code" = 400
+          # Redis made the decision: nothing was degraded and the breaker is closed.
+          metrics="$(curl -fsS "$base/metrics")"
+          echo "$metrics" | grep -qx 'rateguard_degraded_decisions_total{mode="local"} 0'
+          echo "$metrics" | grep -qx 'rateguard_redis_breaker_state 0'
       - name: migrate down one step and back up through the binary
         run: make migrate-down && make migrate-up
       - name: readiness flips when postgres stops, and recovers
@@ -116,3 +132,20 @@ jobs:
       - name: make down
         if: always()
         run: make down
+
+  demo:
+    name: distributed demo (three instances, redis stopped and restarted)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Fails unless exactly 100 of 300 requests get through three instances,
+      # every request is still decided with Redis stopped, and the breakers
+      # close once it is back.
+      - name: make demo
+        run: make demo
+      - name: compose logs
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.demo.yml logs
+      - name: make demo-down
+        if: always()
+        run: make demo-down

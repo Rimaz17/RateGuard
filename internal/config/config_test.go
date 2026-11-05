@@ -49,7 +49,14 @@ func TestLoadDefaults(t *testing.T) {
 			MaxConnLifetime: 30 * time.Minute,
 			MaxConnIdleTime: 5 * time.Minute,
 		},
-		Redis: config.Redis{URL: "redis://localhost:6379/0"},
+		InstanceCount: 1,
+		Redis: config.Redis{
+			URL:             "redis://localhost:6379/0",
+			Timeout:         100 * time.Millisecond,
+			FailureMode:     config.FailureModeLocal,
+			BreakerFailures: 5,
+			BreakerCooldown: 5 * time.Second,
+		},
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("Load() = %+v, want %+v", cfg, want)
@@ -67,6 +74,11 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("RG_REDIS_URL", "redis://:pw@cache:6380/2")
 	t.Setenv("RG_READINESS_TIMEOUT", "750ms")
 	t.Setenv("RG_TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.7/32,,fd00::1/8 ")
+	t.Setenv("RG_INSTANCE_COUNT", "3")
+	t.Setenv("RG_REDIS_TIMEOUT", "40ms")
+	t.Setenv("RG_REDIS_FAILURE_MODE", "closed")
+	t.Setenv("RG_REDIS_BREAKER_FAILURES", "2")
+	t.Setenv("RG_REDIS_BREAKER_COOLDOWN", "750ms")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -103,6 +115,13 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.TrustedProxies, wantProxies) {
 		t.Errorf("TrustedProxies = %v, want %v", cfg.TrustedProxies, wantProxies)
+	}
+	if cfg.InstanceCount != 3 {
+		t.Errorf("InstanceCount = %d, want 3", cfg.InstanceCount)
+	}
+	r := cfg.Redis
+	if r.Timeout != 40*time.Millisecond || r.FailureMode != config.FailureModeClosed || r.BreakerFailures != 2 || r.BreakerCooldown != 750*time.Millisecond {
+		t.Errorf("Redis failure settings = %s, %s, %d, %s; want 40ms, closed, 2, 750ms", r.Timeout, r.FailureMode, r.BreakerFailures, r.BreakerCooldown)
 	}
 }
 
@@ -143,6 +162,14 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"short admin token", "RG_ADMIN_TOKEN", "too-short", "RG_ADMIN_TOKEN must be at least 32 characters, got 9"},
 		{"trusted proxy without mask", "RG_TRUSTED_PROXIES", "10.0.0.1", "parsing environment"},
 		{"trusted proxy not an address", "RG_TRUSTED_PROXIES", "lb.internal/32", "parsing environment"},
+		{"zero instance count", "RG_INSTANCE_COUNT", "0", "RG_INSTANCE_COUNT must be at least 1, got 0"},
+		{"negative instance count", "RG_INSTANCE_COUNT", "-3", "RG_INSTANCE_COUNT must be at least 1, got -3"},
+		{"zero redis timeout", "RG_REDIS_TIMEOUT", "0s", "RG_REDIS_TIMEOUT must be positive"},
+		{"unknown failure mode", "RG_REDIS_FAILURE_MODE", "unlimited", `RG_REDIS_FAILURE_MODE must be local, open or closed, got "unlimited"`},
+		{"failure mode is case-sensitive", "RG_REDIS_FAILURE_MODE", "Local", "RG_REDIS_FAILURE_MODE must be local, open or closed"},
+		{"zero breaker failures", "RG_REDIS_BREAKER_FAILURES", "0", "RG_REDIS_BREAKER_FAILURES must be at least 1"},
+		{"negative breaker failures", "RG_REDIS_BREAKER_FAILURES", "-1", "parsing environment"},
+		{"zero breaker cooldown", "RG_REDIS_BREAKER_COOLDOWN", "0s", "RG_REDIS_BREAKER_COOLDOWN must be positive"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

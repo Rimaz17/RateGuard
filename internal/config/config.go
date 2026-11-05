@@ -50,15 +50,45 @@ type Config struct {
 	// and would let any caller pick its own identity.
 	TrustedProxies Prefixes `env:"RG_TRUSTED_PROXIES"`
 
+	// InstanceCount is how many RateGuard instances share the traffic.
+	// While Redis is unreachable, each instance's local bucket holds
+	// capacity / InstanceCount, so that together they approximate the real
+	// limit (ADR 0001). Keep it in step with the deployment.
+	InstanceCount int `env:"RG_INSTANCE_COUNT" envDefault:"1"`
+
 	Database Database
 	Redis    Redis
 }
 
-// Redis configures the Redis client.
+// Redis failure modes (ADR 0001).
+const (
+	FailureModeLocal  = "local"
+	FailureModeOpen   = "open"
+	FailureModeClosed = "closed"
+)
+
+// Redis configures the Redis client and what happens when Redis fails.
 type Redis struct {
 	// URL is a redis:// or rediss:// URL. It can carry a password, so it is
 	// a Secret even though the default has none.
 	URL Secret `env:"RG_REDIS_URL" envDefault:"redis://localhost:6379/0"`
+
+	// Timeout bounds each bucket operation. A slower Redis counts as a
+	// failure, so a hung Redis cannot hold decisions up for longer.
+	Timeout time.Duration `env:"RG_REDIS_TIMEOUT" envDefault:"100ms"`
+
+	// FailureMode says how decisions are made while Redis is unreachable:
+	// local (an in-memory bucket per instance), open (allow everything) or
+	// closed (refuse everything). See ADR 0001 and ADR 0014.
+	FailureMode string `env:"RG_REDIS_FAILURE_MODE" envDefault:"local"`
+
+	// BreakerFailures is how many consecutive failed bucket operations open
+	// the circuit breaker.
+	BreakerFailures uint32 `env:"RG_REDIS_BREAKER_FAILURES" envDefault:"5"`
+
+	// BreakerCooldown is how long the breaker stays open before it lets one
+	// request through to find out whether Redis is back.
+	BreakerCooldown time.Duration `env:"RG_REDIS_BREAKER_COOLDOWN" envDefault:"5s"`
 }
 
 // Database configures the PostgreSQL connection pool. It is a separate type
@@ -125,7 +155,26 @@ func (c Config) validate() error {
 	if n := len(c.AdminToken.Value()); n > 0 && n < MinAdminTokenLen {
 		errs = append(errs, fmt.Errorf("RG_ADMIN_TOKEN must be at least %d characters, got %d", MinAdminTokenLen, n))
 	}
-	errs = append(errs, c.Database.validate())
+	if c.InstanceCount < 1 {
+		errs = append(errs, fmt.Errorf("RG_INSTANCE_COUNT must be at least 1, got %d", c.InstanceCount))
+	}
+	errs = append(errs, c.Database.validate(), c.Redis.validate())
+	return errors.Join(errs...)
+}
+
+func (r Redis) validate() error {
+	errs := positiveDurations(
+		namedDuration{"RG_REDIS_TIMEOUT", r.Timeout},
+		namedDuration{"RG_REDIS_BREAKER_COOLDOWN", r.BreakerCooldown},
+	)
+	switch r.FailureMode {
+	case FailureModeLocal, FailureModeOpen, FailureModeClosed:
+	default:
+		errs = append(errs, fmt.Errorf("RG_REDIS_FAILURE_MODE must be local, open or closed, got %q", r.FailureMode))
+	}
+	if r.BreakerFailures < 1 {
+		errs = append(errs, errors.New("RG_REDIS_BREAKER_FAILURES must be at least 1, got 0"))
+	}
 	return errors.Join(errs...)
 }
 

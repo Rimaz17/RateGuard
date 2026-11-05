@@ -55,7 +55,9 @@ func newRedisClient(t *testing.T, url string) *redis.Client {
 	if err != nil {
 		t.Fatalf("parsing redis URL: %v", err)
 	}
+	// As main configures it: context deadlines bind, and no retries.
 	opts.ContextTimeoutEnabled = true
+	opts.MaxRetries = -1
 	rdb := redis.NewClient(opts)
 	t.Cleanup(func() { _ = rdb.Close() })
 	return rdb

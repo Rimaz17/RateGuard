@@ -30,10 +30,16 @@ func badRequest(format string, args ...any) *requestError {
 	return &requestError{status: http.StatusBadRequest, message: fmt.Sprintf(format, args...)}
 }
 
-// decodeJSON reads exactly one JSON object from the body into dst. The body
-// is capped at maxBodyBytes, unknown fields are rejected so a typo cannot
-// pass silently, and trailing data after the object is an error.
+// decodeJSON reads exactly one JSON object of at most maxBodyBytes from the
+// body into dst. See decodeJSONLimit.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) *requestError {
+	return decodeJSONLimit(w, r, dst, maxBodyBytes)
+}
+
+// decodeJSONLimit reads exactly one JSON object from the body into dst. The
+// body is capped at limit bytes, unknown fields are rejected so a typo
+// cannot pass silently, and trailing data after the object is an error.
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) *requestError {
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		mediaType, _, err := mime.ParseMediaType(ct)
 		if err != nil || mediaType != "application/json" {
@@ -41,7 +47,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) *requestError {
 		}
 	}
 
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		return decodeError(err)
@@ -67,7 +73,7 @@ func decodeError(err error) *requestError {
 	case errors.Is(err, io.EOF):
 		return badRequest("request body is required")
 	case errors.As(err, &tooLarge):
-		return &requestError{status: http.StatusRequestEntityTooLarge, message: fmt.Sprintf("request body must be at most %d bytes", maxBodyBytes)}
+		return &requestError{status: http.StatusRequestEntityTooLarge, message: fmt.Sprintf("request body must be at most %d bytes", tooLarge.Limit)}
 	case errors.As(err, &syntax), errors.Is(err, io.ErrUnexpectedEOF):
 		return badRequest("request body is not valid JSON")
 	case errors.As(err, &typeErr):

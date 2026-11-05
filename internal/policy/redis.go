@@ -57,6 +57,12 @@ func (b *Broadcaster) Notify(ctx context.Context, c Change) {
 	}
 }
 
+// NotifyClient announces a change to one client, such as a revoked API key,
+// as a client change. It satisfies client.Notifier.
+func (b *Broadcaster) NotifyClient(ctx context.Context, clientID string) {
+	b.Notify(ctx, ForClient(clientID))
+}
+
 // Subscriber applies changes published by any instance to the local cache.
 type Subscriber struct {
 	rdb    *redis.Client
