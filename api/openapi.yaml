@@ -139,6 +139,12 @@ paths:
         "200":
           description: Allowed. A token was taken.
           headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/RateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/RateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/RateLimitReset"
             Cache-Control:
               schema: {type: string, const: no-store}
           content:
@@ -148,6 +154,15 @@ paths:
         "429":
           description: Refused. The bucket is empty; retry after `retry_after` seconds.
           headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/RateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/RateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/RateLimitReset"
+            Retry-After:
+              description: Seconds until a request would be allowed, rounded up; equal to `retry_after`.
+              schema: {type: integer, minimum: 1}
             Cache-Control:
               schema: {type: string, const: no-store}
           content:
@@ -729,6 +744,18 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
   headers:
+    RateLimitLimit:
+      description: The bucket's capacity; equal to `limit` (ADR 0016).
+      schema: {type: integer, minimum: 1}
+    RateLimitRemaining:
+      description: Whole requests still available; equal to `remaining`.
+      schema: {type: integer, minimum: 0}
+    RateLimitReset:
+      description: |
+        Seconds until the bucket is full again, rounded up; equal to
+        `reset_after`. A delta, not a timestamp, so no clock needs to agree
+        with RateGuard's (ADR 0002).
+      schema: {type: integer, minimum: 0}
     RequestID:
       description: The request ID, echoed from the request or generated.
       schema:

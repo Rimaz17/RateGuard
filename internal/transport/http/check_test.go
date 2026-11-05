@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -125,6 +126,67 @@ func TestCheckRefused(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(body)); got != `{"allowed":false,"limit":100,"remaining":0,"reset_after":12,"retry_after":12}` {
 		t.Errorf("body = %s, want the overview's rejected shape", got)
+	}
+}
+
+func TestCheckSendsTheRateLimitHeaders(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision limiter.Decision
+		status   int
+		want     map[string]string
+	}{
+		{
+			name:     "allowed",
+			decision: limiter.Decision{Allowed: true, Limit: 100, Remaining: 72, ResetAfter: 17*time.Second + time.Millisecond},
+			status:   http.StatusOK,
+			want:     map[string]string{"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "72", "X-RateLimit-Reset": "18", "Retry-After": ""},
+		},
+		{
+			name:     "refused",
+			decision: limiter.Decision{Allowed: false, Limit: 100, ResetAfter: 11500 * time.Millisecond, RetryAfter: 400 * time.Millisecond},
+			status:   http.StatusTooManyRequests,
+			want:     map[string]string{"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "12", "Retry-After": "1"},
+		},
+		{
+			name:     "full bucket resets in zero",
+			decision: limiter.Decision{Allowed: true, Limit: 5, Remaining: 5},
+			status:   http.StatusOK,
+			want:     map[string]string{"X-RateLimit-Limit": "5", "X-RateLimit-Remaining": "5", "X-RateLimit-Reset": "0"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newCheckServer(t, &stubDecider{decision: tt.decision})
+			resp, body := c.post(t, validKey, productsBody)
+			if resp.StatusCode != tt.status {
+				t.Fatalf("status = %d %s, want %d", resp.StatusCode, body, tt.status)
+			}
+			for h, want := range tt.want {
+				if got := resp.Header.Get(h); got != want {
+					t.Errorf("%s = %q, want %q", h, got, want)
+				}
+			}
+			// The headers and the body must never disagree (ADR 0016).
+			m := decodeObject(t, body)
+			if fmt.Sprint(m["reset_after"]) != resp.Header.Get("X-RateLimit-Reset") ||
+				fmt.Sprint(m["remaining"]) != resp.Header.Get("X-RateLimit-Remaining") {
+				t.Errorf("headers %v disagree with body %s", resp.Header, body)
+			}
+			if r, ok := m["retry_after"]; ok && fmt.Sprint(r) != resp.Header.Get("Retry-After") {
+				t.Errorf("Retry-After %q disagrees with retry_after %v", resp.Header.Get("Retry-After"), r)
+			}
+		})
+	}
+}
+
+func TestCheckErrorsCarryNoRateLimitHeaders(t *testing.T) {
+	c := newCheckServer(t, &stubDecider{err: domain.ErrNoPolicy})
+	resp, _ := c.post(t, validKey, productsBody)
+	for _, h := range []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"} {
+		if v := resp.Header.Get(h); v != "" {
+			t.Errorf("a 403 carries %s = %q; there is no limit to report", h, v)
+		}
 	}
 }
 

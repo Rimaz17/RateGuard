@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -119,22 +120,50 @@ func isToken(s string) bool {
 
 func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 
+// The rate-limit headers (ADR 0016). Each mirrors a body field.
+const (
+	headerLimit      = "X-RateLimit-Limit"
+	headerRemaining  = "X-RateLimit-Remaining"
+	headerReset      = "X-RateLimit-Reset"
+	headerRetryAfter = "Retry-After"
+)
+
 // writeDecision sends a decision: 200 if allowed, 429 if not, with the same
-// body either way (ADR 0015).
+// body either way (ADR 0015) and the rate-limit headers (ADR 0016).
 func writeDecision(w http.ResponseWriter, d limiter.Decision) {
+	body := toDecisionDTO(d)
+	status := http.StatusOK
+	if !d.Allowed {
+		w.Header().Set(headerRetryAfter, strconv.FormatInt(*body.RetryAfter, 10))
+		status = http.StatusTooManyRequests
+	}
+	writeDecisionBody(w, status, body)
+}
+
+// toDecisionDTO rounds a decision's durations up to whole seconds. A
+// refusal always says at least one second.
+func toDecisionDTO(d limiter.Decision) decisionDTO {
 	body := decisionDTO{
 		Allowed:    d.Allowed,
 		Limit:      d.Limit,
 		Remaining:  d.Remaining,
 		ResetAfter: ceilSeconds(d.ResetAfter),
 	}
-	status := http.StatusOK
 	if !d.Allowed {
 		retry := max(ceilSeconds(d.RetryAfter), 1)
 		body.RetryAfter = &retry
-		status = http.StatusTooManyRequests
 	}
-	w.Header().Set("Cache-Control", "no-store")
+	return body
+}
+
+// writeDecisionBody sends the body with the X-RateLimit-* headers that
+// mirror it.
+func writeDecisionBody(w http.ResponseWriter, status int, body decisionDTO) {
+	h := w.Header()
+	h.Set(headerLimit, strconv.Itoa(body.Limit))
+	h.Set(headerRemaining, strconv.Itoa(body.Remaining))
+	h.Set(headerReset, strconv.FormatInt(body.ResetAfter, 10))
+	h.Set("Cache-Control", "no-store")
 	writeJSON(w, status, body)
 }
 
