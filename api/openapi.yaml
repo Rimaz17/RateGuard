@@ -11,7 +11,7 @@ info:
     of at most 64 characters from `[A-Za-z0-9._-]` is reused; anything else is
     replaced with a generated ID.
 
-    Admin routes (`/v1/clients`, `/v1/policies`) require
+    Admin routes (`/v1/clients`, `/v1/policies`, `/v1/analytics`) require
     `Authorization: Bearer <RG_ADMIN_TOKEN>`.
     Every error has the same body: `{"error": "...", "request_id": "..."}`.
 servers:
@@ -35,6 +35,11 @@ tags:
       policy is disabled or unassigned, uses the default policy. With neither,
       the caller has no policy and is refused, never allowed unlimited
       (ADR 0009). Changes reach every RateGuard instance within milliseconds.
+  - name: analytics
+    description: |
+      How many checks each caller had allowed and rejected. Usage is counted
+      in memory on the decision path and reaches Postgres through Redis off
+      it, so reports lag real time by about 10 seconds (ADR 0018).
 paths:
   /healthz:
     get:
@@ -748,6 +753,61 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/analytics/usage:
+    get:
+      tags: [analytics]
+      operationId: getUsage
+      summary: Usage totals, per-client ranking and a time series
+      description: |
+        Counts the checks made through `POST /v1/check` over `[from, to)`:
+        totals, the share of callers identified only by IP, the clients ranked
+        by rejections (the most throttled first), and a series with one point
+        per minute or hour, zeros included. Peeks are not counted, and a
+        caller's IP address is never recorded.
+
+        The range is widened to whole points of the granularity in UTC:
+        `from` down and `to` up. The response states the range it answers.
+        Usage reaches Postgres about every 10 seconds (ADR 0018), so the last
+        few seconds may not show yet.
+      parameters:
+        - name: from
+          in: query
+          description: Start of the range, RFC 3339. Defaults to 24 hours before `to`.
+          schema: {type: string, format: date-time}
+          example: "2026-11-05T09:00:00Z"
+        - name: to
+          in: query
+          description: End of the range, exclusive, RFC 3339. Defaults to now.
+          schema: {type: string, format: date-time}
+          example: "2026-11-05T10:00:00Z"
+        - name: granularity
+          in: query
+          description: |
+            Width of one series point. The series holds at most 1440 points:
+            a day by the minute, or 60 days by the hour.
+          schema:
+            type: string
+            enum: [minute, hour]
+            default: hour
+        - name: top
+          in: query
+          description: How many clients to rank.
+          schema: {type: integer, minimum: 1, maximum: 100, default: 10}
+      responses:
+        "200":
+          description: The report.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UsageReport"}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
   securitySchemes:
     adminToken:
@@ -1108,3 +1168,65 @@ components:
           example: /api/login
         capacity: {type: integer, minimum: 1, maximum: 1000000000, example: 5}
         window_seconds: {type: integer, minimum: 1, maximum: 86400, example: 60}
+    UsageTotals:
+      type: object
+      required: [requests, allowed, rejected]
+      properties:
+        requests:
+          type: integer
+          description: Checks counted; `allowed` plus `rejected`.
+          example: 1300
+        allowed: {type: integer, example: 1200}
+        rejected:
+          type: integer
+          description: Checks refused with 429 because the bucket was empty.
+          example: 100
+    ClientUsage:
+      allOf:
+        - type: object
+          required: [client_id, name]
+          properties:
+            client_id: {type: string, format: uuid}
+            name: {type: string, example: Customer App}
+        - $ref: "#/components/schemas/UsageTotals"
+    UsagePoint:
+      allOf:
+        - type: object
+          required: [start]
+          properties:
+            start:
+              type: string
+              format: date-time
+              description: Start of the point's minute or hour, in UTC.
+        - $ref: "#/components/schemas/UsageTotals"
+    UsageReport:
+      type: object
+      required: [from, to, granularity, totals, unidentified, clients, series]
+      properties:
+        from:
+          type: string
+          format: date-time
+          description: Start of the range answered, widened to the granularity.
+        to:
+          type: string
+          format: date-time
+          description: End of the range answered, exclusive, widened to the granularity.
+        granularity:
+          type: string
+          enum: [minute, hour]
+        totals:
+          $ref: "#/components/schemas/UsageTotals"
+        unidentified:
+          description: The checks of callers without an API key, identified by IP. Their addresses are not recorded.
+          allOf:
+            - $ref: "#/components/schemas/UsageTotals"
+        clients:
+          type: array
+          description: |
+            Registered clients with checks in the range, most rejected first,
+            then most requests; at most `top` of them.
+          items: {$ref: "#/components/schemas/ClientUsage"}
+        series:
+          type: array
+          description: One point per minute or hour from `from` to `to`.
+          items: {$ref: "#/components/schemas/UsagePoint"}
