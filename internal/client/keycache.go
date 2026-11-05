@@ -12,6 +12,11 @@ import (
 // safety net for a missed revocation notice (ADR 0012).
 const DefaultKeyTTL = 10 * time.Second
 
+// DefaultKeyMaxStale is how long past its TTL a cached key is still served
+// while Postgres cannot be reached, so a database outage does not fail
+// every check once entries expire (ADR 0021).
+const DefaultKeyMaxStale = 15 * time.Minute
+
 // keyLoadTimeout bounds one shared key lookup in Postgres.
 const keyLoadTimeout = 5 * time.Second
 
@@ -22,6 +27,9 @@ const keyLoadTimeout = 5 * time.Second
 //
 // Only keys that exist are cached, revoked ones included. A prefix with no
 // key is looked up again each time, so made-up keys cannot fill the cache.
+// While Postgres is unreachable, a key already cached keeps being served
+// for up to DefaultKeyMaxStale past its TTL; a key the database reports
+// missing, or whose client was invalidated, is not (ADR 0021).
 // A KeyCache is safe for concurrent use.
 type KeyCache struct {
 	keys *cache.Cache[domain.StoredKey]
@@ -31,8 +39,9 @@ var _ KeyFinder = (*KeyCache)(nil)
 
 // NewKeyCache returns an empty KeyCache in front of keys whose entries live
 // for ttl. opts configure the underlying cache, such as an observer for
-// its hit ratio.
+// its hit ratio; a cache.WithStale among them replaces the default.
 func NewKeyCache(keys KeyFinder, ttl time.Duration, opts ...cache.Option) *KeyCache {
+	opts = append([]cache.Option{cache.WithStale(DefaultKeyMaxStale, domain.ErrNotFound, domain.ErrInvalid)}, opts...)
 	return &KeyCache{keys: cache.New(ttl, keyLoadTimeout, nil, keys.FindByPrefix, opts...)}
 }
 

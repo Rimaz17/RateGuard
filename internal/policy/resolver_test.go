@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Rimaz17/RateGuard/internal/domain"
 	"github.com/Rimaz17/RateGuard/internal/policy"
@@ -251,4 +252,57 @@ func reversed(rs []domain.EndpointRule) []domain.EndpointRule {
 
 func rotated(rs []domain.EndpointRule, n int) []domain.EndpointRule {
 	return append(slices.Clone(rs[n:]), rs[:n]...)
+}
+
+// Plans keep resolving through a Postgres outage that outlasts the TTL: the
+// last loaded client assignments, policies and default are served rather
+// than failing every check once they expire (ADR 0021).
+func TestResolverServesTheLastKnownPlansWhileTheDatabaseIsDown(t *testing.T) {
+	s := plans()
+	clock := newFakeClock()
+	r := policy.NewResolver(s, s, policy.WithTTL(10*time.Second), policy.WithClock(clock.Now))
+	wantKeyed := mustResolve(t, r, keyed(merchantApp), http.MethodGet, "/api/orders/1")
+	wantAnon := mustResolve(t, r, anonymous, http.MethodPost, "/api/login")
+
+	s.mu.Lock()
+	s.err = errors.New("database down")
+	s.mu.Unlock()
+	clock.Advance(11 * time.Second)
+
+	for range 3 {
+		if got := mustResolve(t, r, keyed(merchantApp), http.MethodGet, "/api/orders/1"); got != wantKeyed {
+			t.Errorf("keyed during the outage = %+v, want %+v", got, wantKeyed)
+		}
+		if got := mustResolve(t, r, anonymous, http.MethodPost, "/api/login"); got != wantAnon {
+			t.Errorf("anonymous during the outage = %+v, want %+v", got, wantAnon)
+		}
+	}
+}
+
+// The fallback is bounded: past the max stale age a plan is not served from
+// memory any more, and with stale serving off the outage fails at once.
+func TestResolverStopsServingStalePlansAfterTheMaxAge(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		maxStale time.Duration
+		advance  time.Duration
+	}{
+		{"past the max age", time.Minute, 10*time.Second + time.Minute},
+		{"stale serving off", 0, 10 * time.Second},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := plans()
+			clock := newFakeClock()
+			r := policy.NewResolver(s, s, policy.WithTTL(10*time.Second), policy.WithMaxStale(tt.maxStale), policy.WithClock(clock.Now))
+			mustResolve(t, r, keyed(merchantApp), http.MethodGet, "/")
+
+			s.mu.Lock()
+			s.err = errors.New("database down")
+			s.mu.Unlock()
+			clock.Advance(tt.advance)
+			if _, err := r.Resolve(t.Context(), keyed(merchantApp), http.MethodGet, "/"); err == nil {
+				t.Error("Resolve with the database down: served a stale plan, want an error")
+			}
+		})
+	}
 }
