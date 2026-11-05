@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/Rimaz17/RateGuard/internal/analytics"
+	"github.com/Rimaz17/RateGuard/internal/cache"
 	"github.com/Rimaz17/RateGuard/internal/client"
 	"github.com/Rimaz17/RateGuard/internal/limiter"
 	"github.com/Rimaz17/RateGuard/internal/policy"
@@ -50,6 +51,10 @@ type nodeOptions struct {
 	// memoryOnly decides from this process's memory alone, as an
 	// in-process limiter would: the counter-example to sharing Redis.
 	memoryOnly bool
+
+	// cacheTTL is the TTL of the key and policy caches; zero means an
+	// hour, so that only invalidations empty them.
+	cacheTTL time.Duration
 }
 
 func newNode(t *testing.T, pool *pgxpool.Pool, o nodeOptions) *node {
@@ -59,8 +64,17 @@ func newNode(t *testing.T, pool *pgxpool.Pool, o nodeOptions) *node {
 	clientStore := postgres.NewClients(pool)
 	policyStore := postgres.NewPolicies(pool)
 
-	resolver := policy.NewResolver(clientStore, policyStore, policy.WithTTL(time.Hour))
-	keys := client.NewKeyCache(postgres.NewAPIKeys(pool), time.Hour)
+	registry := prometheus.NewRegistry()
+	cacheMetrics, err := cache.NewMetrics(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ttl := o.cacheTTL
+	if ttl == 0 {
+		ttl = time.Hour
+	}
+	resolver := policy.NewResolver(clientStore, policyStore, policy.WithTTL(ttl), policy.WithCacheObserver(cacheMetrics.Observer))
+	keys := client.NewKeyCache(postgres.NewAPIKeys(pool), ttl, cache.WithObserver(cacheMetrics.Observer("api_key")))
 	caches := policy.Invalidators{resolver, policy.ClientChanges(keys)}
 	broadcaster := policy.NewBroadcaster(rdb, caches, logger)
 	runSubscriber(t, rdb, &observed{inner: caches},
@@ -68,7 +82,6 @@ func newNode(t *testing.T, pool *pgxpool.Pool, o nodeOptions) *node {
 	clients := client.New(clientStore, postgres.NewAPIKeys(pool), broadcaster)
 	policies := policy.New(policyStore, postgres.NewEndpointRules(pool), clientStore, broadcaster)
 
-	registry := prometheus.NewRegistry()
 	metrics, err := limiter.NewMetrics(registry)
 	if err != nil {
 		t.Fatal(err)

@@ -1,0 +1,884 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RateGuard Testing Guide</title>
+<style>
+  @page {
+    size: A4;
+    margin: 18mm 16mm 18mm 16mm;
+    @bottom-center { content: "RateGuard testing guide  ·  page " counter(page) " of " counter(pages); font: 8pt "Segoe UI", Arial, sans-serif; color: #7a8494; }
+  }
+  @page :first { @bottom-center { content: none; } }
+  :root {
+    --ink: #1d2433; --muted: #5b6475; --line: #d9dee7; --brand: #1f4e8c; --brand-soft: #eaf1fb;
+    --ok: #1d7a46; --ok-soft: #e8f5ee; --warn: #9a5b00; --warn-soft: #fff4e0; --code-bg: #f4f6f9;
+  }
+  * { box-sizing: border-box; }
+  body { font: 10pt/1.5 "Segoe UI", Arial, sans-serif; color: var(--ink); margin: 0; background: #fff; }
+  h1, h2, h3, h4 { color: var(--brand); line-height: 1.25; }
+  h2 { font-size: 17pt; margin: 0 0 6pt; padding-bottom: 4pt; border-bottom: 2px solid var(--brand); break-after: avoid; }
+  h3 { font-size: 12.5pt; margin: 16pt 0 4pt; break-after: avoid; }
+  h4 { font-size: 10.5pt; margin: 10pt 0 3pt; color: var(--ink); break-after: avoid; }
+  p { margin: 0 0 6pt; }
+  ul, ol { margin: 0 0 6pt; padding-left: 18pt; }
+  li { margin-bottom: 2pt; }
+  code, pre, .mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 8.8pt; }
+  code { background: var(--code-bg); padding: 0 3px; border-radius: 3px; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 5px; padding: 6pt 8pt; margin: 4pt 0 8pt; white-space: pre-wrap; word-break: break-all; break-inside: avoid; }
+  table { border-collapse: collapse; width: 100%; margin: 4pt 0 8pt; break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 3pt 6pt; text-align: left; vertical-align: top; }
+  th { background: var(--brand-soft); font-weight: 600; }
+  .part { break-before: page; }
+  .lead { color: var(--muted); font-size: 10.5pt; margin-bottom: 10pt; }
+
+  /* cover */
+  .cover { height: 250mm; display: flex; flex-direction: column; justify-content: center; }
+  .cover h1 { font-size: 34pt; margin: 0 0 6pt; }
+  .cover .sub { font-size: 14pt; color: var(--muted); margin-bottom: 26pt; }
+  .cover .meta { border-top: 1px solid var(--line); padding-top: 10pt; color: var(--muted); font-size: 9.5pt; }
+  .cover .meta b { color: var(--ink); }
+
+  .toc { columns: 2; column-gap: 18pt; font-size: 9.5pt; }
+  .toc div { break-inside: avoid; margin-bottom: 2pt; }
+
+  .test { break-inside: avoid; border: 1px solid var(--line); border-left: 4px solid var(--brand); border-radius: 5px; padding: 7pt 10pt 4pt; margin: 0 0 10pt; }
+  .test > h3 { margin-top: 0; }
+  .test .goal { color: var(--muted); margin-bottom: 5pt; }
+  .req { font-size: 9pt; }
+  .req th { width: 22%; }
+  .label { display: inline-block; font-size: 7.5pt; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 1pt 5pt; border-radius: 3px; margin-right: 4pt; }
+  .exp { background: var(--ok-soft); border: 1px solid #bfe3cd; border-radius: 5px; padding: 5pt 8pt; margin: 4pt 0 6pt; break-inside: avoid; }
+  .exp .label { background: var(--ok); color: #fff; }
+  .why { font-size: 9pt; color: var(--muted); margin-bottom: 4pt; }
+  .why b { color: var(--ink); }
+  .note { background: var(--warn-soft); border: 1px solid #f0d9a8; border-radius: 5px; padding: 5pt 8pt; margin: 4pt 0 8pt; font-size: 9.2pt; break-inside: avoid; }
+  .note .label { background: var(--warn); color: #fff; }
+  .tip { background: var(--brand-soft); border: 1px solid #c8daf3; border-radius: 5px; padding: 5pt 8pt; margin: 4pt 0 8pt; font-size: 9.2pt; break-inside: avoid; }
+  .tip .label { background: var(--brand); color: #fff; }
+  .m { display: inline-block; font-weight: 700; font-size: 8pt; padding: 0 5px; border-radius: 3px; color: #fff; font-family: Consolas, monospace; }
+  .GET { background: #1d7a46; } .POST { background: #a35a00; } .PUT { background: #1f4e8c; } .PATCH { background: #6b3fa0; } .DELETE { background: #b3261e; }
+  .tick { color: var(--ok); font-weight: 700; }
+  .small { font-size: 8.8pt; color: var(--muted); }
+  .keep { break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<!-- ============================== COVER ============================== -->
+<section class="cover">
+  <h1>RateGuard</h1>
+  <div class="sub">Testing guide: how to set up, run and test every feature,<br>step by step, with the result you should expect each time</div>
+  <p style="max-width:150mm">Written for Windows and for someone working with Go for the first time. Every request in this guide was
+  run against the real service before the guide was written, and the expected results are copied from those runs.</p>
+  <div class="meta">
+    <div><b>Tested against:</b> v1 (all seven phases) plus the Postgres-outage fix of ADR 0021</div>
+    <div><b>Tools used:</b> Docker Desktop, Postman, VS Code, PowerShell, Git Bash, a web browser</div>
+    <div><b>Date:</b> 5 November 2026</div>
+  </div>
+</section>
+
+<!-- ============================== CONTENTS ============================== -->
+<section class="part">
+  <h2>Contents</h2>
+  <div class="toc">
+    <div><b>Part 1. Setup</b></div>
+    <div>1.1 Which editor to use (and why not the others)</div>
+    <div>1.2 What to install</div>
+    <div>1.3 Start RateGuard</div>
+    <div>1.4 Set up Postman</div>
+    <div>1.5 How to read this guide</div>
+    <div style="margin-top:6pt"><b>Part 2. Manual tests in Postman</b></div>
+    <div>T1–T2 Health checks</div>
+    <div>T3–T4 Admin security</div>
+    <div>T5 Register an application</div>
+    <div>T6 No policy means refused</div>
+    <div>T7 Create the default plan</div>
+    <div>T8 Burst until refused (429)</div>
+    <div>T9 Peek without spending</div>
+    <div>T10 Tokens come back over time</div>
+    <div>T11 Invalid API key</div>
+    <div>T12 Caller without a key</div>
+    <div>T13 Bad input is rejected</div>
+    <div>T14 Give the app its own plan</div>
+    <div>T15 A stricter limit on one endpoint</div>
+    <div>T16 Change a plan live</div>
+    <div>T17 Keys are never shown twice</div>
+    <div>T18 Key rotation</div>
+    <div>T19 Disabling a plan</div>
+    <div>T20 Admin input validation</div>
+    <div>T21 Unknown routes and wrong methods</div>
+    <div>T22 Request IDs</div>
+    <div>T23 Usage analytics</div>
+    <div>T24 Prometheus metrics</div>
+    <div>T25 Swagger UI (API docs)</div>
+    <div style="margin-top:6pt"><b>Part 3. Failure tests</b></div>
+    <div>F1 Redis goes down</div>
+    <div>F2 Postgres goes down</div>
+    <div>F3 Secrets never reach the logs</div>
+    <div style="margin-top:6pt"><b>Part 4. Automated tests</b></div>
+    <div>A1 Unit tests</div>
+    <div>A2 Unit tests with the race detector</div>
+    <div>A3 Token bucket coverage (90% floor)</div>
+    <div>A4 Lint</div>
+    <div>A5 Integration tests (real Postgres and Redis)</div>
+    <div>A6 Go middleware tests</div>
+    <div>A7 Three instances, one shared limit (demo)</div>
+    <div>A8 Database migrations down and up</div>
+    <div>A9 Load test (optional, 25 minutes)</div>
+    <div style="margin-top:6pt"><b>Part 5. Finishing</b></div>
+    <div>5.1 Stop or reset everything</div>
+    <div>5.2 Troubleshooting</div>
+    <div>5.3 Checklist</div>
+  </div>
+
+  <h3>What RateGuard is, in one paragraph</h3>
+  <p>RateGuard is a small web service that answers one question for other applications: <i>"should I allow this request?"</i>
+  An application sends RateGuard the method and path of a request it received (for example <code>GET /api/products</code>)
+  plus the caller's API key. RateGuard finds the caller's plan ("5 requests per 5 minutes", say), takes one token from that
+  caller's bucket, and answers <b>200 (allow)</b> or <b>429 (too many requests)</b>. Buckets live in Redis so several
+  RateGuard copies share one limit. Plans, applications and keys live in PostgreSQL. You manage them through an admin API
+  protected by an admin token.</p>
+
+  <table>
+    <tr><th>Piece</th><th>What it is</th><th>Address on your PC</th></tr>
+    <tr><td>RateGuard</td><td>The Go service (in a Docker container)</td><td><code>http://127.0.0.1:8080</code></td></tr>
+    <tr><td>PostgreSQL</td><td>Database: plans, applications, keys, usage</td><td><code>127.0.0.1:5433</code></td></tr>
+    <tr><td>Redis</td><td>Fast shared memory: the token buckets</td><td><code>127.0.0.1:6379</code></td></tr>
+    <tr><td>Swagger UI</td><td>Web page documenting the API (optional)</td><td><code>http://127.0.0.1:8081</code></td></tr>
+  </table>
+</section>
+
+<!-- ============================== PART 1 ============================== -->
+<section class="part">
+  <h2>Part 1. Setup</h2>
+
+  <h3>1.1 Which editor to use</h3>
+  <table>
+    <tr><th>Tool you have</th><th>Use it for this project?</th><th>Why</th></tr>
+    <tr><td><b>VS Code</b></td><td class="tick">Yes: your main editor</td><td>Free, excellent Go support through one extension, and it has a built-in terminal for the Docker commands.</td></tr>
+    <tr><td><b>Postman</b></td><td class="tick">Yes: for API testing</td><td>Part 2 of this guide is done entirely in Postman.</td></tr>
+    <tr><td>IntelliJ IDEA</td><td>No</td><td>Go support needs the paid Ultimate edition with the Go plugin (or JetBrains' separate GoLand IDE). The free Community edition cannot run Go. VS Code does everything you need.</td></tr>
+    <tr><td>Android Studio</td><td>No</td><td>Built for Android apps; it has no Go support.</td></tr>
+  </table>
+
+  <h4>VS Code extensions to install</h4>
+  <p>Open VS Code, click the <b>Extensions</b> icon on the left bar (four squares) or press <code>Ctrl+Shift+X</code>, search, and click <b>Install</b>:</p>
+  <table>
+    <tr><th>Extension</th><th>Publisher</th><th>Needed?</th><th>What it gives you</th></tr>
+    <tr><td><b>Go</b></td><td>Go Team at Google</td><td>Required</td><td>Syntax colours, autocomplete, go-to-definition, a "run test" link above every test, formatting on save.</td></tr>
+    <tr><td>Docker <span class="small">(may be listed as "Container Tools")</span></td><td>Microsoft</td><td>Optional</td><td>See running containers and their logs in the side bar.</td></tr>
+    <tr><td>YAML</td><td>Red Hat</td><td>Optional</td><td>Nicer editing of <code>docker-compose.yml</code> and <code>api/openapi.yaml</code>.</td></tr>
+  </table>
+  <p>After installing the <b>Go</b> extension, open any <code>.go</code> file. A pop-up in the bottom-right corner says some tools
+  (such as <code>gopls</code>) are missing: click <b>Install All</b>. If you miss it, press <code>Ctrl+Shift+P</code>, type
+  <b>Go: Install/Update Tools</b>, tick every box, and click <b>OK</b>. This needs Go installed first (next section).</p>
+
+  <h3>1.2 What to install</h3>
+  <table>
+    <tr><th>Program</th><th>Needed for</th><th>How to check it is installed</th></tr>
+    <tr><td><b>Docker Desktop</b></td><td>Everything: RateGuard, Postgres and Redis all run in Docker</td><td><code>docker version</code> shows a "Server" section</td></tr>
+    <tr><td><b>Git for Windows</b> (includes <b>Git Bash</b>)</td><td>Getting the code; running the demo script (A7)</td><td><code>git --version</code></td></tr>
+    <tr><td><b>Go 1.27.3</b> (from go.dev/dl)</td><td>Part 4 unit tests and the VS Code Go extension. Not needed for Parts 2 and 3.</td><td><code>go version</code> prints <code>go1.27.3</code></td></tr>
+    <tr><td><b>Postman</b></td><td>Part 2</td><td>Already installed</td></tr>
+  </table>
+  <p>You do <b>not</b> need to install PostgreSQL, Redis, <code>make</code> or <code>golangci-lint</code>: they all run inside Docker.</p>
+  <div class="note"><span class="label">Note</span> The project's README uses <code>make</code> commands (<code>make up</code>, <code>make test</code>).
+  <code>make</code> is not installed on Windows by default, so this guide gives the plain command each one runs instead.</div>
+
+  <h4>Opening a terminal in VS Code</h4>
+  <ol>
+    <li>In VS Code: <b>File → Open Folder…</b> and choose <code>D:\learn\Side-Projects\RateGuard-Workspace\RateGuard</code>.</li>
+    <li>Open the terminal: menu <b>Terminal → New Terminal</b> (or <code>Ctrl+`</code>). It opens <b>PowerShell</b> in the project folder.</li>
+    <li>When this guide says <b>Git Bash</b>, click the small <b>⌄</b> arrow next to the <b>+</b> in the terminal panel and choose <b>Git Bash</b>.</li>
+  </ol>
+  <div class="note"><span class="label">Careful</span> In PowerShell, <code>curl</code> is not the real curl. This guide avoids it and uses Postman or the browser instead.
+  If you ever do need curl in PowerShell, type <code>curl.exe</code>.</div>
+</section>
+
+<section>
+  <h3>1.3 Start RateGuard</h3>
+  <ol>
+    <li><b>Start Docker Desktop</b> from the Start menu. Wait until the whale icon in the taskbar stops animating and Docker
+    Desktop says <i>Engine running</i> (under a minute).</li>
+    <li>In the VS Code terminal (PowerShell), make sure you are on the latest code:
+<pre>git checkout main
+git pull</pre></li>
+    <li>Create your settings file if it does not exist yet (on your PC it already does; this command only copies when the file is missing, so it is always safe):
+<pre>if (-not (Test-Path .env)) { Copy-Item configs\.env.example .env }</pre>
+    <code>.env</code> holds local settings, including the admin token <code>change-me-local-only-admin-token-0000</code> used throughout this guide.</li>
+    <li><b>Start from an empty database.</b> The expected results in this guide assume nothing has been created yet. Your PC's database still holds
+    test data from the load tests (including a default plan of 3 requests an hour), which would change the numbers you see. This command stops
+    everything and <b>deletes all local RateGuard data</b> (only the data in Docker, never your code):
+<pre>docker compose down -v</pre></li>
+    <li>Build and start everything (the first build takes a few minutes; later starts take seconds):
+<pre>docker compose up -d --build --wait</pre></li>
+    <li>Check what is running:
+<pre>docker compose ps -a</pre></li>
+  </ol>
+  <div class="exp"><span class="label">Expected</span>
+  The <code>up</code> command ends with lines like <code>Container rateguard-rateguard-1 Healthy</code>, <code>…-postgres-1 Healthy</code>,
+  <code>…-redis-1 Healthy</code>. In <code>docker compose ps -a</code>, <b>rateguard</b>, <b>postgres</b> and <b>redis</b> are <i>Up (healthy)</i> and
+  <b>migrate</b> is <i>Exited (0)</i>. That is correct: <b>migrate</b> is a one-off job that creates the database tables and then stops.</div>
+  <div class="note"><span class="label">If it fails</span> On a brand-new database, <code>up</code> occasionally stops with
+  <i>dependency postgres failed to start</i>, because the first boot of Postgres restarts itself once. Just run the same <code>up</code> command again.
+  If it says a port is <i>already allocated</i>, another program uses 8080, 5433 or 6379: change <code>RATEGUARD_HOST_PORT</code>,
+  <code>POSTGRES_HOST_PORT</code> or <code>REDIS_HOST_PORT</code> in <code>.env</code> and run <code>up</code> again (and use the new port in Postman).</div>
+
+  <h4>Quick check in the browser</h4>
+  <p>Open <code>http://127.0.0.1:8080/readyz</code> in any browser. You should see
+  <code>{"status":"ready","checks":{"postgres":"ok","redis":"ok"}}</code>. RateGuard is running.</p>
+
+  <h3>1.4 Set up Postman</h3>
+  <h4>a) Create an environment (stores values you reuse)</h4>
+  <ol>
+    <li>In Postman's left side bar click <b>Environments</b>, then the <b>+</b> button. Name it <b>RateGuard Local</b>.</li>
+    <li>Add these variables (type the name in the <b>Variable</b> column and the value in the <b>Initial value</b> and <b>Current value</b> columns,
+    or the single <b>Value</b> column in newer versions). Leave the last six empty: requests fill them in for you.
+    <table class="req">
+      <tr><th>Variable</th><th>Value</th></tr>
+      <tr><td><code>baseUrl</code></td><td><code>http://127.0.0.1:8080</code></td></tr>
+      <tr><td><code>adminToken</code></td><td><code>change-me-local-only-admin-token-0000</code></td></tr>
+      <tr><td><code>clientId</code>, <code>apiKey</code>, <code>keyId</code>, <code>apiKey2</code>, <code>freeId</code>, <code>premiumId</code></td><td><i>(leave empty)</i></td></tr>
+    </table></li>
+    <li>Click <b>Save</b> (or <code>Ctrl+S</code>).</li>
+    <li>In the top-right corner of Postman there is a drop-down that says <b>No environment</b>. Choose <b>RateGuard Local</b>.
+    <b>Forgetting this is the most common mistake:</b> every <code>{{baseUrl}}</code> would then be blank.</li>
+  </ol>
+
+  <h4>b) Create a collection (a folder for your requests)</h4>
+  <ol>
+    <li>Click <b>Collections</b> in the left side bar, then <b>+</b>, and name it <b>RateGuard Tests</b>.</li>
+    <li>For each test: click the <b>⋯</b> next to the collection, choose <b>Add request</b>, give it the test's name, and fill it in as described.
+    Saved requests can be re-sent later with one click.</li>
+  </ol>
+</section>
+
+<section>
+  <h4>c) The parts of a Postman request you will use</h4>
+  <table>
+    <tr><th>Where</th><th>What to do</th></tr>
+    <tr><td><b>Method drop-down</b> (left of the URL bar)</td><td>Pick <span class="m GET">GET</span>, <span class="m POST">POST</span>, <span class="m PUT">PUT</span>, <span class="m PATCH">PATCH</span> or <span class="m DELETE">DELETE</span>.</td></tr>
+    <tr><td><b>URL bar</b></td><td>Type the URL exactly as shown, for example <code>{{baseUrl}}/v1/check</code>. Variables in <code>{{ }}</code> turn orange when Postman recognises them (red means the environment is not selected or the name is misspelt).</td></tr>
+    <tr><td><b>Authorization</b> tab</td><td><b>Auth Type → Bearer Token</b>, then type the token in the <b>Token</b> box, e.g. <code>{{adminToken}}</code>. For "no key" tests choose <b>No Auth</b>.</td></tr>
+    <tr><td><b>Body</b> tab</td><td>Choose <b>raw</b>, then change the drop-down on the right from <b>Text</b> to <b>JSON</b>, and paste the JSON. (Postman then sends <code>Content-Type: application/json</code> for you.)</td></tr>
+    <tr><td><b>Headers</b> tab</td><td>Only needed once (T22), to add your own header.</td></tr>
+    <tr><td><b>Scripts</b> tab → <b>Post-response</b> <span class="small">(called <b>Tests</b> in older Postman)</span></td><td>Paste the small script shown in a test. It runs after the response arrives and saves values (like the new API key) into your environment.</td></tr>
+    <tr><td><b>Send</b> button</td><td>Sends the request.</td></tr>
+  </table>
+  <h4>Reading the response (bottom half of the window)</h4>
+  <ul>
+    <li><b>Status</b>: top right of the response area, e.g. <code>200 OK</code> or <code>429 Too Many Requests</code>. In this service, the status code <i>is</i> the answer.</li>
+    <li><b>Body</b> tab with <b>Pretty</b> selected: the JSON reply.</li>
+    <li><b>Headers</b> tab: the response headers, for example <code>X-RateLimit-Remaining</code> and <code>X-Request-Id</code>.</li>
+  </ul>
+
+  <h3>1.5 How to read this guide</h3>
+  <ul>
+    <li>Do the Part 2 tests <b>in order</b>. Later tests use values (keys, IDs, plans) that earlier tests create.</li>
+    <li>Each test has a <b>request table</b> (what to fill in), an <b>Expected</b> box (what you should see) and a line on <b>what it proves</b>.</li>
+    <li>IDs, keys and request IDs are random, so yours will differ from the examples. Things like <code>01a1abee-…</code> or <code>rg_sho_…</code> stand for those.</li>
+    <li>Numbers that depend on time (<code>reset_after</code>, <code>retry_after</code>) count down while you work, so yours may be a few seconds lower.</li>
+    <li>Every error response has the same shape: <code>{"error":"&lt;message&gt;","request_id":"&lt;random id&gt;"}</code>. The guide shows only the message.</li>
+  </ul>
+  <div class="tip"><span class="label">Tip</span> If a test goes wrong and you want to start over, run
+  <code>docker compose down -v</code> then <code>docker compose up -d --build --wait</code>, clear the six empty variables in Postman, and restart at T1.</div>
+</section>
+
+<!-- ============================== PART 2 ============================== -->
+<section class="part">
+  <h2>Part 2. Manual tests in Postman</h2>
+  <p class="lead">Health, security, plans, limits, keys, analytics and metrics. Allow about 45 minutes.</p>
+
+  <div class="test">
+    <h3>T1. Liveness: is the process up?</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m GET">GET</span> <code>{{baseUrl}}/healthz</code></td></tr>
+      <tr><th>Authorization</th><td>No Auth</td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> Status <b>200 OK</b>. Body <code>{"status":"ok"}</code>.
+    In the response <b>Headers</b> tab there is an <code>X-Request-Id</code> with a random 32-character value.</div>
+    <div class="why"><b>Proves:</b> the service is running. Every response carries a request ID for tracing.</div>
+  </div>
+
+  <div class="test">
+    <h3>T2. Readiness: can it reach its databases?</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m GET">GET</span> <code>{{baseUrl}}/readyz</code></td></tr>
+      <tr><th>Authorization</th><td>No Auth</td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> Status <b>200 OK</b>. Body
+    <code>{"status":"ready","checks":{"postgres":"ok","redis":"ok"}}</code>.</div>
+    <div class="why"><b>Proves:</b> readiness really checks Postgres and Redis (Part 3 shows it turning red).</div>
+  </div>
+
+  <div class="test">
+    <h3>T3. Admin API refuses a missing token</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/clients</code></td></tr>
+      <tr><th>Authorization</th><td>No Auth</td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> Status <b>401 Unauthorized</b>. Body error:
+    <code>"a valid admin token is required"</code>. Headers include <code>Www-Authenticate: Bearer realm="rateguard-admin"</code>.</div>
+    <div class="why"><b>Proves:</b> nobody can manage applications or plans without the admin token.</div>
+  </div>
+
+  <div class="test">
+    <h3>T4. Admin API refuses a wrong token</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/clients</code></td></tr>
+      <tr><th>Authorization</th><td>Bearer Token, Token: <code>wrong</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> Status <b>401 Unauthorized</b>, same error as T3.
+    Now change the token to <code>{{adminToken}}</code> and send again: <b>200 OK</b> with body <code>{"clients":[]}</code> (the database is empty).</div>
+    <div class="why"><b>Proves:</b> only the exact admin token works.</div>
+  </div>
+
+  <div class="test">
+    <h3>T5. Register an application and get its API key</h3>
+    <div class="goal">An "application" (called a <i>client</i> in the API) is a program that will call RateGuard. Registering it creates its first API key.</div>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m POST">POST</span> <code>{{baseUrl}}/v1/clients</code></td></tr>
+      <tr><th>Authorization</th><td>Bearer Token: <code>{{adminToken}}</code></td></tr>
+      <tr><th>Body (raw, JSON)</th><td><code>{"name": "Shop App"}</code></td></tr>
+      <tr><th>Scripts → Post-response</th><td><pre style="margin:0">const r = pm.response.json();
+pm.environment.set("clientId", r.client.id);
+pm.environment.set("apiKey", r.api_key.key);
+pm.environment.set("keyId", r.api_key.id);</pre></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> Status <b>201 Created</b>. The body has two parts:
+<pre>{"client":{"id":"01a1abee-…","name":"Shop App","policy_id":null,"status":"active",…},
+ "api_key":{"id":"01a1abee-…","prefix":"rg_sho_d3tttpsmd3rk7gsz","active":true,"revoked_at":null,
+            "key":"rg_sho_d3tttpsmd3rk7gsz_&lt;52 more letters and digits: the secret part&gt;"}}</pre>
+    The key starts with <code>rg_sho_</code> ("sho" from "Shop App"). Open the environment (eye icon, top right) and check that
+    <code>clientId</code>, <code>apiKey</code> and <code>keyId</code> are now filled in.</div>
+    <div class="why"><b>Proves:</b> registration works and the full key is returned. This is the <b>only</b> time RateGuard ever shows it: it stores just a SHA-256 fingerprint.</div>
+  </div>
+</section>
+
+<section>
+  <div class="test">
+    <h3>T6. With no plan at all, requests are refused</h3>
+    <div class="goal">This is the main request of the whole service: "may this caller do <code>GET /api/products</code>?" You will send it many times. <b>Save it</b> as "Check".</div>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m POST">POST</span> <code>{{baseUrl}}/v1/check</code></td></tr>
+      <tr><th>Authorization</th><td>Bearer Token: <code>{{apiKey}}</code> (the application's key, <b>not</b> the admin token)</td></tr>
+      <tr><th>Body (raw, JSON)</th><td><code>{"method": "GET", "path": "/api/products"}</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> Status <b>403 Forbidden</b>. Error: <code>"no rate-limit policy applies to this caller"</code>.</div>
+    <div class="why"><b>Proves:</b> a caller without a plan is never treated as "unlimited". RateGuard fails safe.</div>
+  </div>
+
+  <div class="test">
+    <h3>T7. Create the default plan "Free"</h3>
+    <div class="goal">A <i>policy</i> is a plan: how many requests (<code>capacity</code>) per how many seconds (<code>window_seconds</code>). The <b>default</b> policy applies to anyone without a plan of their own.</div>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m POST">POST</span> <code>{{baseUrl}}/v1/policies</code></td></tr>
+      <tr><th>Authorization</th><td>Bearer Token: <code>{{adminToken}}</code></td></tr>
+      <tr><th>Body (raw, JSON)</th><td><code>{"name": "Free", "capacity": 5, "window_seconds": 300, "default": true}</code></td></tr>
+      <tr><th>Scripts → Post-response</th><td><code>pm.environment.set("freeId", pm.response.json().id);</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> Status <b>201 Created</b>. Body:
+<pre>{"id":"01a1abee-…","name":"Free","capacity":5,"window_seconds":300,
+ "refill_rate":0.016666666666666666,"enabled":true,"default":true,…}</pre>
+    <code>refill_rate</code> is tokens per second: 5 ÷ 300, i.e. one token back every 60 seconds. The <b>Headers</b> tab shows
+    <code>Location: /v1/policies/&lt;id&gt;</code>.</div>
+    <div class="why"><b>Proves:</b> plans can be created, and the refill rate is worked out for you when you leave it out.</div>
+  </div>
+
+  <div class="test">
+    <h3>T8. Use up the bucket: five allowed, the sixth refused</h3>
+    <div class="goal">Go back to the saved <b>Check</b> request from T6 and click <b>Send six times</b>, one after another (finish within about 50 seconds).
+    After each click, look at the status, the body and the <b>Headers</b> tab.</div>
+    <table>
+      <tr><th>Click</th><th>Status</th><th>Body</th></tr>
+      <tr><td>1</td><td>200 OK</td><td><code>{"allowed":true,"limit":5,"remaining":4,"reset_after":60}</code></td></tr>
+      <tr><td>2</td><td>200 OK</td><td><code>…"remaining":3,"reset_after":118</code> (about)</td></tr>
+      <tr><td>3</td><td>200 OK</td><td><code>…"remaining":2,"reset_after":176</code> (about)</td></tr>
+      <tr><td>4</td><td>200 OK</td><td><code>…"remaining":1,"reset_after":234</code> (about)</td></tr>
+      <tr><td>5</td><td>200 OK</td><td><code>…"remaining":0,"reset_after":292</code> (about)</td></tr>
+      <tr><td>6</td><td><b>429 Too Many Requests</b></td><td><code>{"allowed":false,"limit":5,"remaining":0,"reset_after":290,"retry_after":50}</code> (about)</td></tr>
+    </table>
+    <p>In the response <b>Headers</b> tab of every click: <code>X-RateLimit-Limit: 5</code>, <code>X-RateLimit-Remaining</code> equal to
+    <code>remaining</code>, and <code>X-RateLimit-Reset</code> equal to <code>reset_after</code>. Click 6 also has <code>Retry-After: 50</code> (about), equal to <code>retry_after</code>.</p>
+    <div class="exp"><span class="label">Expected</span> Exactly five <b>200</b>s, then <b>429</b>. <code>remaining</code> goes 4, 3, 2, 1, 0.
+    <code>reset_after</code> = seconds until the bucket is full again; <code>retry_after</code> = seconds until one token is back.
+    Both are counts of seconds, not clock times. Your seconds will differ slightly depending on how fast you click.</div>
+    <div class="why"><b>Proves:</b> the token bucket works and the 429 carries the standard rate-limit headers your app can copy onto its own response.</div>
+  </div>
+
+  <div class="test">
+    <h3>T9. Peek: ask without spending a token</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m POST">POST</span> <code>{{baseUrl}}/v1/peek</code> (duplicate "Check": right-click → <b>Duplicate</b>, then change <code>check</code> to <code>peek</code>)</td></tr>
+      <tr><th>Authorization / Body</th><td>Same as T6</td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> Status <b>200 OK</b> even though the bucket is empty. Body
+    <code>{"allowed":false,"limit":5,"remaining":0,"reset_after":…,"retry_after":…}</code>. Send it again: still <b>200</b>, still
+    <code>remaining: 0</code>.</div>
+    <div class="why"><b>Proves:</b> peek reports what a check <i>would</i> do without taking a token. It always answers 200; read <code>allowed</code>.</div>
+  </div>
+</section>
+
+<section>
+  <div class="test">
+    <h3>T10. Tokens come back over time</h3>
+    <div class="goal">Wait until the <code>retry_after</code> from T8 has passed (at most about 60 seconds), then send <b>Check</b> once.</div>
+    <div class="exp"><span class="label">Expected</span> <b>200 OK</b> with <code>"remaining":0</code>: one token had refilled and you just used it. Send again
+    straight away: <b>429</b>.</div>
+    <div class="why"><b>Proves:</b> the bucket refills steadily at the plan's rate (one token every 60 seconds for Free).</div>
+  </div>
+
+  <div class="test">
+    <h3>T11. An invalid API key is refused</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m POST">POST</span> <code>{{baseUrl}}/v1/check</code>, body as T6</td></tr>
+      <tr><th>Authorization</th><td>Bearer Token: <code>rg_xxx_aaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>401 Unauthorized</b>. Error: <code>"invalid API key"</code>.
+    Try also a random word like <code>hello</code> as the token: same <b>401</b>.</div>
+    <div class="why"><b>Proves:</b> a bad key is an error. It is never quietly treated as an anonymous caller.</div>
+  </div>
+
+  <div class="test">
+    <h3>T12. A caller with no key is limited by IP address</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m POST">POST</span> <code>{{baseUrl}}/v1/check</code>, body as T6</td></tr>
+      <tr><th>Authorization</th><td><b>No Auth</b></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>200 OK</b>, <code>{"allowed":true,"limit":5,"remaining":4,"reset_after":60}</code>.
+    This caller has a fresh bucket of its own, separate from Shop App's empty one.</div>
+    <div class="why"><b>Proves:</b> callers without keys use the default plan, counted per IP address.</div>
+  </div>
+
+  <div class="test">
+    <h3>T13. Bad input is rejected with a clear message</h3>
+    <p>Use the <b>Check</b> request (Bearer <code>{{apiKey}}</code>) and change only the body each time:</p>
+    <table>
+      <tr><th>Body to send</th><th>Expected status</th><th>Expected error</th></tr>
+      <tr><td><code>{"method":"GET","path":"/api/products?page=2"}</code></td><td>400</td><td><code>path must not contain a query string or fragment; send the path only</code></td></tr>
+      <tr><td><code>{"path":"/api/products"}</code></td><td>400</td><td><code>method is required</code></td></tr>
+      <tr><td><code>{"method":</code></td><td>400</td><td><code>request body is not valid JSON</code></td></tr>
+    </table>
+    <p>Afterwards put the body back to <code>{"method": "GET", "path": "/api/products"}</code> and save.</p>
+    <div class="why"><b>Proves:</b> input is validated. Query strings are refused so <code>/api/login?x=1</code> cannot sneak past a rule on <code>/api/login</code>.</div>
+  </div>
+
+  <div class="test">
+    <h3>T14. Give the application its own plan</h3>
+    <p><b>Step 1: create a "Premium" plan</b> (100 requests a minute).</p>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m POST">POST</span> <code>{{baseUrl}}/v1/policies</code>, Bearer <code>{{adminToken}}</code></td></tr>
+      <tr><th>Body</th><td><code>{"name": "Premium", "capacity": 100, "window_seconds": 60}</code></td></tr>
+      <tr><th>Post-response</th><td><code>pm.environment.set("premiumId", pm.response.json().id);</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>201 Created</b>, <code>"capacity":100,"refill_rate":1.6666666666666667,"default":false</code>.</div>
+    <p><b>Step 2: put Shop App on Premium.</b></p>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m PUT">PUT</span> <code>{{baseUrl}}/v1/clients/{{clientId}}/policy</code>, Bearer <code>{{adminToken}}</code></td></tr>
+      <tr><th>Body</th><td><code>{"policy_id": "{{premiumId}}"}</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>200 OK</b>; the returned client now has <code>"policy_id"</code> equal to Premium's ID.</div>
+    <p><b>Step 3: send Check again.</b></p>
+    <div class="exp"><span class="label">Expected</span> <b>200 OK</b> with <code>"limit":100</code> straight away. <code>remaining</code> will
+    <b>not</b> be 99: the bucket keeps the tokens it had (none) and now refills at Premium's faster speed (1.67 a second), so you see a number
+    that grows the longer you waited (right after T10 it is <code>0</code>; a minute later it would be in the 90s).</div>
+    <div class="why"><b>Proves:</b> each application can have its own plan, and a plan change applies at once without restarting anything.</div>
+  </div>
+</section>
+
+<section>
+  <div class="test">
+    <h3>T15. A stricter limit on one endpoint (login)</h3>
+    <div class="goal">An <i>endpoint rule</i> gives one part of an API its own, separate limit inside a plan. Here: 3 login attempts per 5 minutes.</div>
+    <p><b>Step 1: add the rule to Premium.</b></p>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m POST">POST</span> <code>{{baseUrl}}/v1/policies/{{premiumId}}/rules</code>, Bearer <code>{{adminToken}}</code></td></tr>
+      <tr><th>Body</th><td><code>{"method": "POST", "path_pattern": "/api/login", "capacity": 3, "window_seconds": 300}</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>201 Created</b>,
+    <code>{"id":"…","policy_id":"…","method":"POST","path_pattern":"/api/login","capacity":3,"window_seconds":300,…}</code>.
+    <span class="m GET">GET</span> <code>{{baseUrl}}/v1/policies/{{premiumId}}/rules</code> lists it under <code>"rules"</code>.</div>
+    <p><b>Step 2:</b> duplicate <b>Check</b>, name it "Check login", set the body to <code>{"method": "POST", "path": "/api/login"}</code>, and send it <b>four</b> times.</p>
+    <div class="exp"><span class="label">Expected</span>
+    <b>200</b> <code>"limit":3,"remaining":2</code> → <b>200</b> <code>"remaining":1</code> → <b>200</b> <code>"remaining":0</code> →
+    <b>429</b> <code>{"allowed":false,"limit":3,"remaining":0,…,"retry_after":…}</code>.</div>
+    <p><b>Step 3: try to dodge the rule.</b> Change the path to <code>/api/login/</code> (extra slash) and send.</p>
+    <div class="exp"><span class="label">Expected</span> Still <b>429</b>, <code>"limit":3</code>. Paths are cleaned before matching.</div>
+    <p><b>Step 4: other traffic is unaffected.</b> Change the method to <code>"GET"</code> (path <code>/api/login</code>) and send; then send the normal <b>Check</b>.</p>
+    <div class="exp"><span class="label">Expected</span> Both <b>200 OK</b> with <code>"limit":100</code>: the rule only covers <code>POST /api/login</code>, and its
+    bucket is separate from the plan's main bucket.</div>
+    <div class="why"><b>Proves:</b> endpoint rules apply, can't be dodged with path tricks, and don't use up the main allowance.</div>
+  </div>
+
+  <div class="test">
+    <h3>T16. Change a plan while it is in use</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m PATCH">PATCH</span> <code>{{baseUrl}}/v1/policies/{{premiumId}}</code>, Bearer <code>{{adminToken}}</code></td></tr>
+      <tr><th>Body</th><td><code>{"capacity": 200}</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>200 OK</b>, <code>"capacity":200,"refill_rate":3.3333333333333335</code> (recomputed for you).
+    Send <b>Check</b> right away: <b>200</b> with <code>"limit":200</code>.</div>
+    <div class="why"><b>Proves:</b> changes reach the hot path immediately. Each copy of RateGuard caches plans, and every change is broadcast over Redis to clear those caches.</div>
+  </div>
+
+  <div class="test">
+    <h3>T17. Listing data never shows a key again</h3>
+    <p>With Bearer <code>{{adminToken}}</code>, send each of these:</p>
+    <table>
+      <tr><th>Request</th><th>Expected (200 OK)</th></tr>
+      <tr><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/clients</code></td><td><code>{"clients":[{"id":"…","name":"Shop App","policy_id":"&lt;Premium id&gt;",…}]}</code></td></tr>
+      <tr><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/clients/{{clientId}}</code></td><td>The one client</td></tr>
+      <tr><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/clients/{{clientId}}/keys</code></td><td><code>{"api_keys":[{"id":"…","prefix":"rg_sho_…","active":true,"revoked_at":null,…}]}</code></td></tr>
+      <tr><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/policies</code></td><td>Both plans, Free with <code>"default":true</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> The keys list shows only the <code>prefix</code>. There is <b>no</b> <code>"key"</code> field anywhere.</div>
+    <div class="why"><b>Proves:</b> a key can't be read back after creation, even by an admin.</div>
+  </div>
+</section>
+
+<section>
+  <div class="test">
+    <h3>T18. Key rotation without downtime</h3>
+    <div class="goal">Real systems change keys from time to time. RateGuard lets an application hold two keys at once: issue new → switch callers → revoke old.</div>
+    <table>
+      <tr><th>#</th><th>Do this</th><th>Expected</th></tr>
+      <tr><td>1</td><td><span class="m POST">POST</span> <code>{{baseUrl}}/v1/clients/{{clientId}}/keys</code>, Bearer <code>{{adminToken}}</code>, no body.<br>
+        Post-response: <code>pm.environment.set("apiKey2", pm.response.json().key);</code></td>
+        <td><b>201 Created</b> with a new <code>"key":"rg_sho_…"</code> (different from the first)</td></tr>
+      <tr><td>2</td><td>Send the same request again</td><td><b>409 Conflict</b>: <code>client already has 2 active API keys; revoke one before issuing another</code></td></tr>
+      <tr><td>3</td><td><b>Check</b> with Bearer <code>{{apiKey2}}</code></td><td><b>200</b>, <code>"limit":200</code>: both keys share one bucket</td></tr>
+      <tr><td>4</td><td><span class="m DELETE">DELETE</span> <code>{{baseUrl}}/v1/clients/{{clientId}}/keys/{{keyId}}</code>, Bearer <code>{{adminToken}}</code></td><td><b>204 No Content</b> (empty body)</td></tr>
+      <tr><td>5</td><td><b>Check</b> with the old <code>{{apiKey}}</code></td><td><b>401</b>: <code>invalid API key</code></td></tr>
+      <tr><td>6</td><td><b>Check</b> with <code>{{apiKey2}}</code></td><td><b>200</b></td></tr>
+    </table>
+    <div class="why"><b>Proves:</b> rotation works, a third key is blocked, and a revoked key stops working immediately.</div>
+    <div class="note"><span class="label">From now on</span> Set the <b>Check</b> request's token to <code>{{apiKey2}}</code> and save it.</div>
+  </div>
+
+  <div class="test">
+    <h3>T19. Disabling a plan falls back to the default</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m DELETE">DELETE</span> <code>{{baseUrl}}/v1/policies/{{premiumId}}</code>, Bearer <code>{{adminToken}}</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>204 No Content</b>. Send <b>Check</b> (with <code>{{apiKey2}}</code>): <b>200</b>, <code>"limit":5,"remaining":4</code>.
+    Shop App is back on Free. <span class="m GET">GET</span> <code>{{baseUrl}}/v1/policies/{{premiumId}}</code> shows <code>"enabled":false</code>: "delete" disables, it doesn't erase.</div>
+    <div class="why"><b>Proves:</b> a disabled plan is skipped safely, and the caller drops to the default rather than to "unlimited".</div>
+  </div>
+
+  <div class="test">
+    <h3>T20. The admin API validates input</h3>
+    <p>With Bearer <code>{{adminToken}}</code>:</p>
+    <table>
+      <tr><th>Request</th><th>Body</th><th>Expected</th></tr>
+      <tr><td><span class="m POST">POST</span> <code>/v1/policies</code></td><td><code>{"name":"Bad","capacity":0,"window_seconds":60}</code></td><td><b>400</b> <code>capacity must be at least 1</code></td></tr>
+      <tr><td><span class="m POST">POST</span> <code>/v1/clients</code></td><td><code>{"name":""}</code></td><td><b>400</b> <code>name is required</code></td></tr>
+      <tr><td><span class="m GET">GET</span> <code>/v1/clients/01a1abee-0000-7000-8000-000000000000</code></td><td>none</td><td><b>404</b> <code>client not found</code></td></tr>
+    </table>
+    <p class="small">(Put <code>{{baseUrl}}</code> in front of each path.)</p>
+  </div>
+
+  <div class="test">
+    <h3>T21. Unknown routes and wrong methods give clean JSON errors</h3>
+    <table>
+      <tr><th>Request</th><th>Expected</th></tr>
+      <tr><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/nothing</code></td><td><b>404</b> <code>no such route</code></td></tr>
+      <tr><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/check</code> (check only accepts POST)</td><td><b>405</b> <code>method not allowed; the Allow header lists the methods this path accepts</code>, and header <code>Allow: POST</code></td></tr>
+    </table>
+    <div class="why"><b>Proves:</b> every error, even a routing miss, has the same JSON shape with a request ID, and no internal details.</div>
+  </div>
+
+  <div class="test">
+    <h3>T22. Your own request ID is passed back</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m GET">GET</span> <code>{{baseUrl}}/healthz</code></td></tr>
+      <tr><th>Headers tab</th><td>Add a row: Key <code>X-Request-ID</code>, Value <code>my-test-123</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>200</b>, and the response <b>Headers</b> tab shows <code>X-Request-Id: my-test-123</code>.</div>
+    <div class="why"><b>Proves:</b> a calling system can trace one request through its own logs and RateGuard's.</div>
+  </div>
+</section>
+
+<section>
+  <div class="test">
+    <h3>T23. Usage analytics</h3>
+    <div class="goal">Every decision is counted in memory, pushed to Redis every second and saved to Postgres every 10 seconds. So wait about <b>15 seconds</b> after your last Check, then:</div>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/analytics/usage?top=3</code>, Bearer <code>{{adminToken}}</code></td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>200 OK</b>. If you clicked exactly as this guide says, you get these numbers (an extra click changes them, which is fine):
+<pre>{"from":"2026-11-04T14:00:00Z","to":"2026-11-05T14:00:00Z","granularity":"hour",
+ "totals":       {"requests":21,"allowed":17,"rejected":4},
+ "unidentified": {"requests":1,"allowed":1,"rejected":0},
+ "clients":[{"client_id":"…","name":"Shop App","requests":20,"allowed":16,"rejected":4}],
+ "series":[{"start":"…","requests":0,…}, … 24 hourly points …, {"start":"&lt;this hour&gt;","requests":21,…}]}</pre>
+    Check that: <code>requests = allowed + rejected</code>; <b>Shop App</b> is listed with a non-zero <code>rejected</code>;
+    <code>unidentified</code> is the 1 keyless check from T12; and only the last hour in <code>series</code> is non-zero.</div>
+    <p>Only checks answered <b>200 or 429</b> are counted; peeks and errors (401, 403, 400) are not. Also try:</p>
+    <table>
+      <tr><th>URL</th><th>Expected</th></tr>
+      <tr><td><code>{{baseUrl}}/v1/analytics/usage?granularity=minute&amp;top=5</code></td><td><b>200</b>, 1,440 one-minute points in <code>series</code></td></tr>
+      <tr><td><code>{{baseUrl}}/v1/analytics/usage?top=500</code></td><td><b>400</b> <code>top must be between 1 and 100</code></td></tr>
+    </table>
+    <div class="why"><b>Proves:</b> usage is recorded without slowing decisions, and reports rank the most throttled applications first.</div>
+  </div>
+
+  <div class="test">
+    <h3>T24. Prometheus metrics</h3>
+    <table class="req">
+      <tr><th>Request</th><td><span class="m GET">GET</span> <code>{{baseUrl}}/metrics</code>, No Auth (or open <code>http://127.0.0.1:8080/metrics</code> in a browser and press <code>Ctrl+F</code>)</td></tr>
+    </table>
+    <div class="exp"><span class="label">Expected</span> <b>200</b>, a long plain-text page. Search for these lines (your numbers follow your clicks):
+<pre>rateguard_decisions_total{outcome="allowed"} 17
+rateguard_decisions_total{outcome="error"} 0
+rateguard_decisions_total{outcome="no_policy"} 1
+rateguard_decisions_total{outcome="rejected"} 4
+rateguard_redis_breaker_state 0
+rateguard_degraded_decisions_total{mode="local"} 0
+rateguard_cache_lookups_total{cache="api_key",result="hit"} …</pre>
+    <code>no_policy 1</code> is T6. <code>breaker_state 0</code> means Redis is healthy. No line contains a client name, ID or key.</div>
+    <div class="why"><b>Proves:</b> the service exposes what an operator needs (decisions, latency histogram, cache hit ratio, Redis health) without leaking caller identities.</div>
+  </div>
+
+  <div class="test">
+    <h3>T25. Swagger UI: the API documentation page</h3>
+    <ol>
+      <li>In the PowerShell terminal: <code>docker compose --profile docs up -d --wait swagger-ui</code></li>
+      <li>Open <code>http://127.0.0.1:8081</code> in a browser.</li>
+      <li>Click any green or orange row (e.g. <b>POST /v1/check</b>) to expand it and read its request body, responses and examples.</li>
+    </ol>
+    <div class="exp"><span class="label">Expected</span> A page titled <b>RateGuard</b> (OAS 3.1) with sections <b>decisions</b>, <b>health</b>, <b>clients</b>, <b>policies</b>,
+    <b>analytics</b>. There is <b>no "Try it out"</b> button: that is deliberate (the page is read-only documentation; use Postman to send requests).
+    The same document is served by RateGuard itself at <code>{{baseUrl}}/openapi.yaml</code>.</div>
+  </div>
+</section>
+
+<!-- ============================== PART 3 ============================== -->
+<section class="part">
+  <h2>Part 3. Failure tests</h2>
+  <p class="lead">What happens when a dependency dies. You stop a container with a command, test in Postman, then start it again. Run these after Part 2,
+  in the VS Code terminal (PowerShell). The <b>Check</b> request should use <code>{{apiKey2}}</code>; Shop App is on Free (5 per 5 minutes) after T19.</p>
+
+  <div class="test">
+    <h3>F1. Redis goes down: decisions continue, still limited</h3>
+    <table>
+      <tr><th>#</th><th>Do this</th><th>Expected</th></tr>
+      <tr><td>1</td><td><code>docker compose stop redis</code></td><td><code>Container rateguard-redis-1 Stopped</code></td></tr>
+      <tr><td>2</td><td><span class="m GET">GET</span> <code>{{baseUrl}}/readyz</code></td><td><b>503</b> <code>{"status":"not ready","checks":{"postgres":"ok","redis":"unavailable"}}</code></td></tr>
+      <tr><td>3</td><td>Send <b>Check</b> seven times</td><td>All answered, none hang: <b>200</b> five times (<code>remaining</code> 4, 3, 2, 1, 0), then <b>429</b> twice. The first one may take a moment longer. The limit still holds without Redis</td></tr>
+      <tr><td>4</td><td>Open <code>{{baseUrl}}/metrics</code>, search <code>degraded</code> and <code>breaker</code></td><td><code>rateguard_degraded_decisions_total{mode="local"} 7</code> (one per check in step 3) and <code>rateguard_redis_breaker_state 2</code> (2 = open)</td></tr>
+      <tr><td>5</td><td><code>docker compose logs --since 5m rateguard</code></td><td>JSON lines with <code>"level":"WARN"</code>, including <code>"msg":"redis circuit breaker opened: rate-limit decisions are degraded"</code></td></tr>
+      <tr><td>6</td><td><code>docker compose start redis</code>, wait <b>10 seconds</b>, send <b>Check</b></td><td><b>200</b> again, <code>"remaining":4</code> (see the note below)</td></tr>
+      <tr><td>7</td><td>Metrics again; logs again</td><td><code>rateguard_redis_breaker_state 0</code>; an <code>"level":"INFO"</code> line <code>"redis circuit breaker closed: rate-limit decisions use redis again"</code></td></tr>
+    </table>
+    <div class="why"><b>Proves:</b> a circuit breaker notices Redis is gone and switches to a local in-memory bucket. Decisions keep coming,
+    and the limit <b>still applies</b>: RateGuard never turns into "allow everything". When Redis returns, it switches back by itself.</div>
+    <div class="note"><span class="label">Why remaining is 4 again</span> The development Redis is configured not to save anything to disk (bucket state is
+    short-lived by design), so restarting it starts every bucket full. In production you would only lose the counts of an outage, never the plans.</div>
+  </div>
+
+  <div class="test">
+    <h3>F2. Postgres goes down: decisions continue from the cache</h3>
+    <table>
+      <tr><th>#</th><th>Do this</th><th>Expected</th></tr>
+      <tr><td>1</td><td>Send <b>Check</b> once, then run <code>docker compose stop postgres</code></td><td><code>Container rateguard-postgres-1 Stopped</code></td></tr>
+      <tr><td>2</td><td><span class="m GET">GET</span> <code>{{baseUrl}}/readyz</code></td><td><b>503</b> <code>{"status":"not ready","checks":{"postgres":"unavailable","redis":"ok"}}</code></td></tr>
+      <tr><td>3</td><td><span class="m GET">GET</span> <code>{{baseUrl}}/v1/policies</code> (admin token)</td><td><b>500</b> <code>internal server error</code> after a few seconds. No SQL text, no host names: just the generic message and a request ID</td></tr>
+      <tr><td>4</td><td>Wait <b>15 seconds</b> (longer than the cache's 10-second lifetime), then send <b>Check</b> a few times</td><td>Normal answers, <b>200</b> or <b>429</b> with <code>"limit":5</code>, exactly as before the outage. The key and plan come from the last copy in memory</td></tr>
+      <tr><td>5</td><td>Open <code>{{baseUrl}}/metrics</code>, search <code>result="stale"</code></td><td><code>rateguard_cache_lookups_total{cache="api_key",result="stale"}</code> is above 0: those checks were answered from the saved copy</td></tr>
+      <tr><td>6</td><td><code>docker compose start postgres</code>, wait 5 seconds, then <code>/readyz</code> and <b>Check</b></td><td><code>/readyz</code> <b>200</b> ready; Check answers normally. Send a few more checks a few seconds apart: the <code>stale</code> count stops rising</td></tr>
+    </table>
+    <div class="why"><b>Proves:</b> rate limiting doesn't depend on the database. RateGuard keeps deciding from the keys and plans it already
+    knows, readiness reports the outage, and error messages never leak internals.</div>
+    <div class="note"><span class="label">Limits of this</span> The saved copies are used for up to <b>15 minutes</b> of outage (ADR 0021). An application
+    RateGuard has never seen before has nothing saved, so its checks fail with <b>500</b> until Postgres is back, and admin changes are impossible
+    while the database is down.</div>
+  </div>
+
+  <div class="test">
+    <h3>F3. Secrets never reach the logs</h3>
+    <ol>
+      <li>In Postman, open the environment and copy the value of <code>apiKey2</code>.</li>
+      <li>In PowerShell (paste the key between the quotes):
+<pre>docker compose logs rateguard | Select-String "PASTE-THE-FULL-KEY-HERE"
+docker compose logs rateguard | Select-String "change-me-local-only-admin-token"</pre></li>
+      <li>Now search for only the key's prefix: the part up to the <b>second</b> underscore after <code>rg_sho_</code> (e.g. <code>rg_sho_ql3shcqvkukewxho</code>).</li>
+    </ol>
+    <div class="exp"><span class="label">Expected</span> The first two searches print <b>nothing</b>. Full keys and the admin token are never
+    written to the logs; when a log line has to name a key, it uses only this prefix.</div>
+  </div>
+</section>
+
+<!-- ============================== PART 4 ============================== -->
+<section class="part">
+  <h2>Part 4. Automated tests</h2>
+  <p class="lead">The project has hundreds of automated tests. Run them from the VS Code terminal in the <code>RateGuard</code> folder. Docker Desktop must be running.</p>
+
+  <div class="test">
+    <h3>A1. Unit tests (quick, on Windows)</h3>
+<pre>go test ./...</pre>
+    <div class="exp"><span class="label">Expected</span> About a minute the first time. Every package line starts with <code>ok</code>; two say <code>[no test files]</code>, which is fine:
+<pre>ok   github.com/Rimaz17/RateGuard/api                       1.383s
+ok   github.com/Rimaz17/RateGuard/cmd/rateguard             6.828s
+ok   github.com/Rimaz17/RateGuard/internal/analytics        …
+ok   github.com/Rimaz17/RateGuard/internal/cache            …
+ok   github.com/Rimaz17/RateGuard/internal/client           …
+ok   github.com/Rimaz17/RateGuard/internal/config           …
+ok   github.com/Rimaz17/RateGuard/internal/domain           …
+ok   github.com/Rimaz17/RateGuard/internal/limiter          …
+ok   github.com/Rimaz17/RateGuard/internal/policy           …
+ok   github.com/Rimaz17/RateGuard/internal/storage/postgres …
+ok   github.com/Rimaz17/RateGuard/internal/transport/http   …
+?    github.com/Rimaz17/RateGuard/migrations                [no test files]
+?    github.com/Rimaz17/RateGuard/test/load/socketbench     [no test files]</pre>
+    A failure prints <code>--- FAIL: TestName</code> and <code>FAIL</code> instead of <code>ok</code>.</div>
+    <div class="tip"><span class="label">In VS Code</span> Open any <code>*_test.go</code> file (e.g. <code>internal/limiter/engine_test.go</code>). Above each
+    <code>func Test…</code> there are small <b>run test | debug test</b> links: click one to run just that test. The <b>Testing</b> icon (flask) in the
+    left bar lists every test with a green tick or red cross.</div>
+  </div>
+
+  <div class="test">
+    <h3>A2. Unit tests with the race detector</h3>
+    <p>The project's rules require every test run to use <code>-race</code>, which catches two goroutines touching the same memory at once. It needs a
+    C compiler that Windows doesn't have, so run it inside the official Go image (PowerShell):</p>
+<pre>docker run --rm -v "${PWD}:/src" -v rateguard-gomod:/go/pkg/mod -w /src golang:1.27.3 go test -race ./...</pre>
+    <div class="exp"><span class="label">Expected</span> A few minutes the first time (it downloads the Go image and the modules), then faster. Same list of <code>ok</code> lines as A1, and no
+    <code>WARNING: DATA RACE</code> anywhere in the output.</div>
+  </div>
+
+  <div class="test">
+    <h3>A3. The token bucket's coverage stays above 90%</h3>
+<pre>docker run --rm -v "${PWD}:/src" -v rateguard-gomod:/go/pkg/mod -w /src golang:1.27.3 sh -c "go test -race -coverprofile=coverage.out ./... &gt; /dev/null &amp;&amp; make cover-engine"</pre>
+    <div class="exp"><span class="label">Expected</span> Last line: <code>internal/limiter/engine.go: 100.0% of statements covered (minimum 90%)</code></div>
+    <div class="why"><b>Proves:</b> the algorithm at the heart of the service is fully tested. CI fails if this drops under 90%.</div>
+  </div>
+
+  <div class="test">
+    <h3>A4. Lint (code quality checks)</h3>
+<pre>docker run --rm -v "${PWD}:/src" -w /src golangci/golangci-lint:v2.15.0 golangci-lint run</pre>
+    <div class="exp"><span class="label">Expected</span> <code>0 issues.</code></div>
+  </div>
+</section>
+
+<section>
+  <div class="test">
+    <h3>A5. Integration tests against real Postgres and Redis</h3>
+    <p>These start their own throwaway Postgres and Redis containers (using <i>testcontainers</i>) and test the whole system, including several
+    RateGuard instances sharing one limit and Redis being killed mid-test. One command, in PowerShell:</p>
+<pre>docker run --rm -v "${PWD}:/src" -v rateguard-gomod:/go/pkg/mod -v /var/run/docker.sock:/var/run/docker.sock -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal -w /src golang:1.27.3 go test -race -tags integration ./test/integration/...</pre>
+    <div class="exp"><span class="label">Expected</span> About 4–5 minutes. One line at the end: <code>ok  github.com/Rimaz17/RateGuard/test/integration  255.288s</code> (your time will differ). A failure shows <code>--- FAIL:</code> lines and <code>FAIL</code>.</div>
+    <div class="note"><span class="label">Note</span> The integration tests use their own containers, so they don't touch the stack you started in Part 1. Close heavy programs
+    first: on a busy laptop a timing-sensitive test can occasionally be slow. Re-run before treating a single failure as a bug.</div>
+  </div>
+
+  <div class="test">
+    <h3>A6. The Go middleware example</h3>
+    <p><code>examples/go-middleware</code> is a ready-made piece of code a Go web app can use to call RateGuard. It has its own tests:</p>
+<pre>cd examples\go-middleware
+go test ./...</pre>
+    <div class="exp"><span class="label">Expected</span> <code>ok  github.com/Rimaz17/RateGuard/examples/go-middleware</code> and
+    <code>[no test files]</code> for <code>sampleapp</code>. One Unix-socket test is skipped on Windows by design.</div>
+    <p><b>End-to-end against your running RateGuard:</b> create a new client in Postman (T5 with name <code>E2E App</code>; it lands on Free, limit 5),
+    copy its <code>key</code> from the response, then:</p>
+<pre>$env:RATEGUARD_URL = "http://127.0.0.1:8080"
+$env:RATEGUARD_API_KEY = "PASTE-THE-E2E-APP-KEY"
+$env:RATEGUARD_LIMIT = "5"
+go test -count=1 -run TestE2E -v .
+cd ..\..</pre>
+    <div class="exp"><span class="label">Expected</span> <code>--- PASS: TestE2E</code> then <code>ok</code>. Without the three variables the test prints
+    <code>SKIP</code> instead, which is also fine.</div>
+  </div>
+
+  <div class="test">
+    <h3>A7. Three instances, one shared limit (the distributed demo)</h3>
+    <p>Starts <b>three</b> RateGuard copies behind a load balancer and proves they share one limit, then stops Redis. Run in <b>Git Bash</b>
+    (VS Code terminal → <b>⌄</b> → Git Bash), in the <code>RateGuard</code> folder:</p>
+<pre>docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build --wait
+./scripts/demo-distributed.sh</pre>
+    <div class="exp"><span class="label">Expected</span> The script prints what it does and ends without any <code>FAIL:</code> line. The key results:
+<pre>== 1. 300 concurrent requests through the load balancer
+allowed 100, refused 200
+requests per instance:   (three addresses, about 100 each)
+== 2. Stopping Redis, then 150 more requests
+allowed 99, refused 51 (each instance's local bucket holds 100 / 3 = 33)
+rateguard_redis_breaker_state per instance (2 = open):   2, 2, 2
+== 3. Starting Redis again
+rateguard_redis_breaker_state per instance (0 = closed): 0, 0, 0
+== The demo passed: one shared limit across three instances, local enforcement
+   while Redis was down, and recovery.</pre>
+    i.e. 300 requests sent at once for a client limited to 100: <b>exactly 100 allowed</b>, spread over all three instances; with Redis stopped every
+    request is still answered from local buckets (a third of the limit each); after Redis returns the breakers close.</div>
+    <p>Afterwards, go back to the normal single-instance stack:</p>
+<pre>docker compose -f docker-compose.yml -f docker-compose.demo.yml down
+docker compose up -d --wait</pre>
+  </div>
+
+  <div class="test">
+    <h3>A8. Database migrations go down and back up</h3>
+    <table>
+      <tr><th>Command (PowerShell)</th><th>Expected last line</th></tr>
+      <tr><td><code>docker compose run --rm migrate migrate version</code></td><td><code>{"level":"INFO","msg":"schema version","version":6,"dirty":false}</code></td></tr>
+      <tr><td><code>docker compose run --rm migrate migrate down 1</code></td><td><code>…"detail":"6/d create_usage_rollups …"</code> then <code>"version":5,"dirty":false</code></td></tr>
+      <tr><td><code>docker compose run --rm migrate migrate up</code></td><td><code>…"detail":"6/u create_usage_rollups …"</code> then <code>"version":6,"dirty":false</code></td></tr>
+    </table>
+    <div class="note"><span class="label">Careful</span> <code>down 1</code> removes the usage table, so analytics from Part 2 are erased (plans, clients and keys stay).</div>
+  </div>
+
+  <div class="test">
+    <h3>A9. Load test (optional, about 25 minutes)</h3>
+    <p>Measures speed (latency) and the maximum requests a second. Close other programs, then in <b>Git Bash</b>: <code>./scripts/loadtest.sh</code>.
+    Reports are written to <code>test/load/results/</code>. Expect a median of about 1 ms per decision and a few thousand requests a second on a laptop;
+    the README's <b>Performance</b> section has the published numbers. Results vary run to run (by 2–3× on a hot laptop). This test was not re-run for this guide.</p>
+  </div>
+</section>
+
+<!-- ============================== PART 5 ============================== -->
+<section class="part">
+  <h2>Part 5. Finishing</h2>
+  <h3>5.1 Stop or reset everything</h3>
+  <table>
+    <tr><th>Goal</th><th>Command (PowerShell, in the RateGuard folder)</th></tr>
+    <tr><td>Stop, keep your data</td><td><code>docker compose --profile docs down</code></td></tr>
+    <tr><td>Stop and erase all local RateGuard data</td><td><code>docker compose --profile docs down -v</code></td></tr>
+    <tr><td>Start again</td><td><code>docker compose up -d --wait</code> (add <code>--build</code> after changing code)</td></tr>
+    <tr><td>Watch the logs live</td><td><code>docker compose logs -f rateguard</code> (stop with <code>Ctrl+C</code>)</td></tr>
+  </table>
+
+  <h3>5.2 Troubleshooting</h3>
+  <table>
+    <tr><th>Symptom</th><th>Cause and fix</th></tr>
+    <tr><td><i>error during connect … dockerDesktopLinuxEngine</i></td><td>Docker Desktop isn't running. Start it and wait for <i>Engine running</i>.</td></tr>
+    <tr><td>Postman: <i>Could not send request</i> / <i>ECONNREFUSED</i></td><td>The stack isn't up. Run <code>docker compose ps</code>; start it with <code>docker compose up -d --wait</code>.</td></tr>
+    <tr><td>Postman URL shows <code>{{baseUrl}}</code> in red</td><td>No environment selected (top right) or a typo in the variable name.</td></tr>
+    <tr><td>Every check is <b>401 invalid API key</b></td><td><code>apiKey</code> is empty, or it was revoked in T18; use <code>{{apiKey2}}</code>. Make sure Auth Type is <b>Bearer Token</b>.</td></tr>
+    <tr><td>Check is <b>403</b> after T7</td><td>Free wasn't created with <code>"default": true</code>, or it was disabled. <code>GET /v1/policies</code> to look.</td></tr>
+    <tr><td>Numbers don't match the guide at all</td><td>The database wasn't empty when you started. Reset (5.1) and begin at T1.</td></tr>
+    <tr><td>Check is <b>400 request body is not valid JSON</b> on a good body</td><td>The Body drop-down is <b>Text</b>, not <b>JSON</b>, or there is a stray character.</td></tr>
+    <tr><td><code>up</code> fails with <i>dependency postgres failed to start</i></td><td>First start of a new database. Run <code>up</code> again.</td></tr>
+    <tr><td><i>port is already allocated</i></td><td>Another program (or another copy of the stack) uses the port. Change the port in <code>.env</code>, or stop the other one.</td></tr>
+    <tr><td><code>go: command not found</code></td><td>Go isn't installed or VS Code was opened before installing it. Install Go 1.27.3 and restart VS Code.</td></tr>
+    <tr><td><code>curl</code> in PowerShell behaves oddly</td><td>Use <code>curl.exe</code>, or use Postman.</td></tr>
+  </table>
+
+  <h3>5.3 Checklist</h3>
+  <table>
+    <tr><th style="width:8%">✓</th><th>Test</th><th style="width:8%">✓</th><th>Test</th></tr>
+    <tr><td>☐</td><td>T1–T2 health and readiness</td><td>☐</td><td>T19 disabled plan falls back</td></tr>
+    <tr><td>☐</td><td>T3–T4 admin token required</td><td>☐</td><td>T20–T21 validation and JSON errors</td></tr>
+    <tr><td>☐</td><td>T5 register, key shown once</td><td>☐</td><td>T22 request ID echoed</td></tr>
+    <tr><td>☐</td><td>T6 no plan → 403</td><td>☐</td><td>T23 analytics</td></tr>
+    <tr><td>☐</td><td>T7–T8 five allowed, then 429</td><td>☐</td><td>T24 metrics</td></tr>
+    <tr><td>☐</td><td>T9 peek spends nothing</td><td>☐</td><td>T25 Swagger UI</td></tr>
+    <tr><td>☐</td><td>T10 refill</td><td>☐</td><td>F1 Redis down, still limited</td></tr>
+    <tr><td>☐</td><td>T11–T12 bad key 401, no key by IP</td><td>☐</td><td>F2 Postgres down</td></tr>
+    <tr><td>☐</td><td>T13 bad input 400</td><td>☐</td><td>F3 no secrets in logs</td></tr>
+    <tr><td>☐</td><td>T14 own plan</td><td>☐</td><td>A1–A4 unit, race, coverage, lint</td></tr>
+    <tr><td>☐</td><td>T15 endpoint rule</td><td>☐</td><td>A5 integration</td></tr>
+    <tr><td>☐</td><td>T16 live plan change</td><td>☐</td><td>A6 middleware</td></tr>
+    <tr><td>☐</td><td>T17 key never shown again</td><td>☐</td><td>A7 three-instance demo</td></tr>
+    <tr><td>☐</td><td>T18 key rotation</td><td>☐</td><td>A8 migrations</td></tr>
+  </table>
+</section>
+
+</body>
+</html>

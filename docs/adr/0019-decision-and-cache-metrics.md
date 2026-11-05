@@ -1,6 +1,6 @@
 # ADR 0019: Decision and cache metrics
 
-- **Status:** Accepted
+- **Status:** Accepted; the cache `result` label gains `stale` in ADR 0021
 - **Date:** 2026-11-05
 
 ## Context

@@ -153,3 +153,49 @@ func TestKeyCacheDoesNotCacheErrors(t *testing.T) {
 	keys.mu.Unlock()
 	find(t, c, "rg_cus_a1")
 }
+
+// A known key keeps authenticating through a Postgres outage that outlasts
+// its TTL: the last stored copy is served rather than failing every check
+// once the entry expires (ADR 0021).
+func TestKeyCacheServesTheLastKnownKeyWhileTheDatabaseIsDown(t *testing.T) {
+	keys := newStubKeys(storedKey("rg_cus_a1", clientA))
+	c := client.NewKeyCache(keys, time.Millisecond)
+	find(t, c, "rg_cus_a1")
+
+	keys.mu.Lock()
+	keys.err = errors.New("database down")
+	keys.mu.Unlock()
+	time.Sleep(5 * time.Millisecond)
+
+	for range 3 {
+		if k := find(t, c, "rg_cus_a1"); k.ClientID != clientA {
+			t.Fatalf("FindByPrefix = client %s, want %s", k.ClientID, clientA)
+		}
+	}
+}
+
+// Only an outage falls back to the old copy. A key the database says is gone
+// is gone, and a key whose client was invalidated is never served from
+// before the change.
+func TestKeyCacheServesNoStaleKeyAfterAnAnswerOrAnInvalidation(t *testing.T) {
+	keys := newStubKeys(storedKey("rg_cus_a1", clientA), storedKey("rg_mer_b1", clientB))
+	c := client.NewKeyCache(keys, time.Millisecond)
+	find(t, c, "rg_cus_a1")
+	find(t, c, "rg_mer_b1")
+
+	keys.mu.Lock()
+	delete(keys.keys, "rg_cus_a1")
+	keys.mu.Unlock()
+	time.Sleep(5 * time.Millisecond)
+	if _, err := c.FindByPrefix(t.Context(), "rg_cus_a1"); !errors.Is(err, domain.ErrAPIKeyNotFound) {
+		t.Errorf("deleted key: error = %v, want ErrAPIKeyNotFound", err)
+	}
+
+	c.InvalidateClient(clientB)
+	keys.mu.Lock()
+	keys.err = errors.New("database down")
+	keys.mu.Unlock()
+	if _, err := c.FindByPrefix(t.Context(), "rg_mer_b1"); err == nil {
+		t.Error("invalidated key with the database down: served a copy from before the invalidation, want an error")
+	}
+}

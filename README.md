@@ -27,6 +27,8 @@ Your service returns `429 Too Many Requests` to its own client when RateGuard sa
   10 seconds ([ADR 0018](docs/adr/0018-usage-analytics-pipeline.md)).
 - **Redis outage**: decisions fall back to a local bucket per instance
   ([ADR 0001](docs/adr/0001-redis-failure-degrades-to-local-bucket.md)).
+- **Postgres outage**: decisions carry on from the last cached keys and plans for up to
+  15 minutes ([ADR 0021](docs/adr/0021-serve-stale-cache-entries-while-postgres-is-down.md)).
 - **Deployment**: one central service, or a sidecar next to each application on a Unix
   socket ([ADR 0017](docs/adr/0017-unix-socket-for-sidecars.md)).
 
@@ -82,6 +84,12 @@ curl -i http://127.0.0.1:8080/readyz
 
 **Next:** the [guide](docs/guide.md) covers key rotation, plans and endpoint rules, the
 decision contract, the Go middleware, sidecars, analytics and observability.
+
+**Testing guide:** [docs/RateGuard-Testing-Guide.pdf](docs/RateGuard-Testing-Guide.pdf)
+is a step-by-step guide to testing every feature on Windows with Postman: setup for a
+first-time Go user, then each request to send and the result to expect, the Redis and
+Postgres failure tests, and the automated test commands. Its source is
+[docs/testing-guide.html](docs/testing-guide.html).
 
 ## Configuration
 

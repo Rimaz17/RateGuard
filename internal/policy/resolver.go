@@ -14,6 +14,11 @@ import (
 // (ADR 0005).
 const DefaultTTL = 10 * time.Second
 
+// DefaultMaxStale is how long past the TTL a cached entry is still served
+// while Postgres cannot be reached, so a database outage does not fail
+// every check once entries expire (ADR 0021).
+const DefaultMaxStale = 15 * time.Minute
+
 // defaultLoadTimeout bounds one shared cache load from Postgres.
 const defaultLoadTimeout = 5 * time.Second
 
@@ -43,6 +48,10 @@ type Catalog interface {
 //   - the default policy's ID, dropped by any policy change, since any
 //     policy write may move the default flag.
 //
+// While Postgres is unreachable, entries already cached keep being served
+// for up to DefaultMaxStale past the TTL. An entry the database reports
+// missing, or one dropped by a change, is not (ADR 0021).
+//
 // A Resolver is safe for concurrent use.
 type Resolver struct {
 	clients  *cache.Cache[string]
@@ -54,9 +63,10 @@ type Resolver struct {
 type Option func(*options)
 
 type options struct {
-	ttl     time.Duration
-	now     func() time.Time
-	observe func(name string) cache.Observer
+	ttl      time.Duration
+	maxStale time.Duration
+	now      func() time.Time
+	observe  func(name string) cache.Observer
 }
 
 // Names of the Resolver's caches, as WithCacheObserver is given them.
@@ -75,15 +85,23 @@ func WithCacheObserver(observe func(name string) cache.Observer) Option {
 
 // cacheOptions returns the options for the cache called name.
 func (o options) cacheOptions(name string) []cache.Option {
-	if o.observe == nil {
-		return nil
+	opts := []cache.Option{cache.WithStale(o.maxStale, domain.ErrNotFound, domain.ErrInvalid)}
+	if o.observe != nil {
+		opts = append(opts, cache.WithObserver(o.observe(name)))
 	}
-	return []cache.Option{cache.WithObserver(o.observe(name))}
+	return opts
 }
 
 // WithTTL sets how long cached entries live. The default is DefaultTTL.
 func WithTTL(ttl time.Duration) Option {
 	return func(o *options) { o.ttl = ttl }
+}
+
+// WithMaxStale sets how long past the TTL entries are still served while
+// Postgres cannot be reached. The default is DefaultMaxStale; zero turns
+// stale serving off.
+func WithMaxStale(d time.Duration) Option {
+	return func(o *options) { o.maxStale = d }
 }
 
 // WithClock sets the clock that expires cached entries. It exists for
@@ -95,7 +113,7 @@ func WithClock(now func() time.Time) Option {
 
 // NewResolver returns a Resolver that reads from the given sources.
 func NewResolver(clients Assignments, policies Catalog, opts ...Option) *Resolver {
-	o := options{ttl: DefaultTTL, now: time.Now}
+	o := options{ttl: DefaultTTL, maxStale: DefaultMaxStale, now: time.Now}
 	for _, opt := range opts {
 		opt(&o)
 	}
