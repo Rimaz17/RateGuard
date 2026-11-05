@@ -35,6 +35,17 @@ down: ## Stop the stack (keeps the Postgres volume)
 logs: ## Follow logs from every service
 	docker compose logs -f
 
+DEMO_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.demo.yml
+
+.PHONY: demo
+demo: .env ## Three instances behind nginx: show one shared limit, then stop and restart Redis
+	$(DEMO_COMPOSE) up -d --build --wait
+	./scripts/demo-distributed.sh
+
+.PHONY: demo-down
+demo-down: ## Stop the demo stack (keeps the Postgres volume)
+	$(DEMO_COMPOSE) down
+
 .PHONY: smoke
 smoke: ## Check that /healthz and /readyz on the running stack return 200
 	curl -fsS --retry 10 --retry-connrefused --retry-delay 1 $(HEALTHZ_URL)

@@ -1,0 +1,28 @@
+# The distributed demo: three RateGuard instances behind an nginx load balancer.
+# Layered on docker-compose.yml by `make demo`:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build --wait
+#
+# The instances are reachable only through the load balancer, on
+# 127.0.0.1:${DEMO_LB_PORT:-8090}.
+services:
+  rateguard:
+    # Replicas cannot share a host port; nginx is the way in.
+    ports: !reset []
+    deploy:
+      replicas: 3
+    environment:
+      # Each instance's local bucket holds a third of the limit while Redis
+      # is down (ADR 0001).
+      RG_INSTANCE_COUNT: "3"
+
+  lb:
+    image: nginx:1.29.3-alpine
+    ports:
+      - "127.0.0.1:${DEMO_LB_PORT:-8090}:80"
+    volumes:
+      - ./scripts/demo/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      rateguard:
+        condition: service_started
+    restart: unless-stopped
