@@ -94,11 +94,16 @@ paths:
       operationId: getMetrics
       summary: Prometheus scrape
       description: |
-        Metrics in the Prometheus text format. Among them,
-        `rateguard_degraded_decisions_total` counts decisions made without
-        Redis, `rateguard_redis_errors_total` counts failed Redis calls, and
-        `rateguard_redis_breaker_state` is 0, 1 or 2 for a closed, half-open
-        or open circuit breaker (ADR 0014). No label names a client or a key.
+        Metrics in the Prometheus text format (ADR 0014, ADR 0019). Among
+        them, `rateguard_decisions_total` counts checks by outcome,
+        `rateguard_decision_duration_seconds` is a histogram of decision
+        latency by operation, `rateguard_cache_lookups_total` counts hits
+        and misses of the in-process caches, `rateguard_degraded_decisions_total`
+        counts decisions made without Redis, `rateguard_redis_errors_total`
+        counts failed Redis calls, `rateguard_redis_breaker_state` is 0, 1
+        or 2 for a closed, half-open or open circuit breaker, and
+        `rateguard_usage_dropped_total` counts checks lost to analytics. No
+        label names a client, a key or an address.
       security: [] # Scraped like the probes; it carries only aggregates.
       responses:
         "200":
@@ -108,6 +113,8 @@ paths:
               schema:
                 type: string
               example: |
+                # TYPE rateguard_decisions_total counter
+                rateguard_decisions_total{outcome="allowed"} 1042
                 # TYPE rateguard_degraded_decisions_total counter
                 rateguard_degraded_decisions_total{mode="local"} 0
   /openapi.yaml:
