@@ -32,12 +32,14 @@ func TestMetricsCountHitsAndMisses(t *testing.T) {
 	mustGet(t, c, "b") // invalidated: miss
 
 	want := `
-# HELP rateguard_cache_lookups_total Lookups in the in-process caches on the decision path, by cache and result (hit or miss).
+# HELP rateguard_cache_lookups_total Lookups in the in-process caches on the decision path, by cache and result (hit, miss, or stale while the database is unreachable).
 # TYPE rateguard_cache_lookups_total counter
 rateguard_cache_lookups_total{cache="api_key",result="hit"} 2
 rateguard_cache_lookups_total{cache="api_key",result="miss"} 4
+rateguard_cache_lookups_total{cache="api_key",result="stale"} 0
 rateguard_cache_lookups_total{cache="policy",result="hit"} 0
 rateguard_cache_lookups_total{cache="policy",result="miss"} 0
+rateguard_cache_lookups_total{cache="policy",result="stale"} 0
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want)); err != nil {
 		t.Error(err)

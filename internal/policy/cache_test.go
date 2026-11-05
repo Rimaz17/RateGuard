@@ -292,11 +292,11 @@ type lookups struct {
 }
 
 func (l *lookups) observer(name string) cache.Observer {
-	return lookupFunc(func(hit bool) {
+	return lookupFunc(func(r cache.Result) {
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		c := l.counts[name]
-		if hit {
+		if r == cache.Hit {
 			c[1]++
 		} else {
 			c[0]++
@@ -305,9 +305,9 @@ func (l *lookups) observer(name string) cache.Observer {
 	})
 }
 
-type lookupFunc func(hit bool)
+type lookupFunc func(r cache.Result)
 
-func (f lookupFunc) Lookup(hit bool) { f(hit) }
+func (f lookupFunc) Lookup(r cache.Result) { f(r) }
 
 func TestResolverReportsEachCachesLookups(t *testing.T) {
 	s := plans()
