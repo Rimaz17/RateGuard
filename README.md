@@ -370,7 +370,9 @@ The tests check, without any network:
 
 ## Data model
 
-PostgreSQL holds the configuration: policies and their endpoint rules, clients and their API keys. Redis holds only ephemeral bucket state and the invalidation channel. The schema lives in
+PostgreSQL holds the configuration (policies and their endpoint rules, clients and their
+API keys) and per-minute usage. Redis holds only ephemeral state: buckets, usage counts
+not yet rolled up, and the invalidation channel. The schema lives in
 [`migrations/`](migrations) as reversible, numbered pairs.
 
 | Store | Holds |
@@ -379,7 +381,9 @@ PostgreSQL holds the configuration: policies and their endpoint rules, clients a
 | `endpoint_rules` table | A policy's own limits for particular methods and path patterns |
 | `clients` table | Registered applications, their status and assigned policy |
 | `api_keys` table | Each client's keys: public prefix, SHA-256 digest, revocation time |
+| `usage_rollups` table | Checks allowed and rejected per client (or for all callers known by IP) per minute |
 | Redis `rg:bucket:*` | One hash per active bucket: `tokens` and `last_refill_us`, expiring when full |
+| Redis `rg:usage:*` | Usage counts on their way from the instances to `usage_rollups` |
 | Redis `rg:policy:invalidate` | Pub/sub channel carrying `client:<id>` and `policy:<id>` changes |
 
 Column-level detail and the conventions behind it are in
